@@ -15,6 +15,14 @@ enum Snapshot {
                 controller.editor.textView.setSelectedRange(NSRange(location: location, length: 5))
             }
         }
+        if env["DRAFTER_SNAPSHOT_NOTES"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { controller.toggleNotes(nil) }
+        }
+        if let text = env["DRAFTER_SNAPSHOT_TYPE"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+                (controller.window?.firstResponder as? NSTextView)?.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            }
+        }
         if let heading = env["DRAFTER_SNAPSHOT_HEADING"].flatMap(Int.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { controller.editor.goToHeading(heading) }
         }

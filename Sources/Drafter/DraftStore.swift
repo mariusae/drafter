@@ -146,10 +146,10 @@ final class DraftStore {
     func rename(_ url: URL) throws -> URL { try moved(url) { try directory.rename(url) } }
 
     /// Creates the notes file beside a draft if it is not there yet.
-    func notes(for draft: Draft) throws -> URL {
-        let notes = draft.notesURL
+    func notes(for draft: URL, title: String) throws -> URL {
+        let notes = DraftsDirectory.notes(for: draft)
         if !FileManager.default.fileExists(atPath: notes.path) {
-            let heading = draft.title.replacingOccurrences(of: "\n", with: " ")
+            let heading = title.replacingOccurrences(of: "\n", with: " ")
             try Data("# Notes on \(heading)\n\n".utf8).write(to: notes, options: .withoutOverwriting)
             commitAndPush()
         }

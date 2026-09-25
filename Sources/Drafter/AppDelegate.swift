@@ -26,13 +26,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    // Activation can come before launch has finished — when macOS asks
+    // about reopening windows after a crash — so neither assumes a window.
+
     func applicationDidResignActive(_ notification: Notification) {
-        windowController.editor.saveNow()
-        windowController.recordState()
+        windowController?.editor.saveNow()
+        windowController?.recordState()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        store.reload()
+        store?.reload()
     }
 
     /// Saves, and gives git a moment to commit and push what was saved, so a

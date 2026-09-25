@@ -16,9 +16,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     let store: DraftStore
     let list: DraftListViewController
     let editor: EditorViewController
+    let notesEditor: EditorViewController
     let outline = OutlineViewController()
     private let split = NSSplitViewController()
     private var outlineItem: NSSplitViewItem!
+    /// The draft over its notes.
+    private let pages = NSSplitViewController()
+    private var notesItem: NSSplitViewItem!
     private var goTo: GoToAnythingController!
     private var restored = false
     private let session = SessionState.shared
@@ -27,6 +31,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         self.store = store
         list = DraftListViewController(store: store)
         editor = EditorViewController(store: store)
+        notesEditor = EditorViewController(store: store, role: .notes)
 
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -43,7 +48,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         sidebar.maximumThickness = 460
         sidebar.canCollapse = true
         sidebar.allowsFullHeightLayout = true
-        let content = NSSplitViewItem(viewController: editor)
+        let notesPane = NotesPaneViewController(editor: notesEditor)
+        pages.splitView.isVertical = false
+        pages.splitView.dividerStyle = .thin
+        let page = NSSplitViewItem(viewController: editor)
+        page.minimumThickness = 120
+        page.holdingPriority = .init(rawValue: 260)
+        notesItem = NSSplitViewItem(viewController: notesPane)
+        notesItem.minimumThickness = 90
+        notesItem.canCollapse = true
+        notesItem.isCollapsed = true
+        pages.addSplitViewItem(page)
+        pages.addSplitViewItem(notesItem)
+        pages.splitView.autosaveName = "PagesSplit"
+        notesPane.onClose = { [weak self] in self?.hideNotes() }
+
+        let content = NSSplitViewItem(viewController: pages)
         content.minimumThickness = 360
         outlineItem = NSSplitViewItem(inspectorWithViewController: outline)
         outlineItem.minimumThickness = 180
@@ -99,7 +119,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         outline.onChoose = { [weak self] index in self?.editor.goToHeading(index) }
         outline.onReturn = { [weak self] in self?.editor.focus() }
-        store.flushPendingEdits = { [weak self] in self?.editor.saveNow() }
+        editor.onURLChange = { [weak self] in self?.updateNotes() }
+        notesEditor.onEscape = { [weak self] in self?.editor.focus() }
+        store.flushPendingEdits = { [weak self] in
+            self?.editor.saveNow()
+            self?.notesEditor.saveNow()
+        }
 
         NotificationCenter.default.addObserver(self, selector: #selector(draftsDidChange),
                                                name: .draftsDidChange, object: store)
@@ -142,9 +167,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc private func draftsDidChange() {
         guard !restored else {
             updateTitle()
+            updateNotes()  // notes made elsewhere, or come down in a pull
             return
         }
-        let open = session.openDraft.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        // Only a draft of this directory: the one remembered may belong to
+        // a directory since left.
+        let open = session.openDraft.flatMap {
+            store.directory.folder(of: $0) != nil && FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
+        }
         let mode = session.listMode
         if let folder = mode.folder {
             if let open, let draft = store.draft(at: open), draft.folder == folder {
@@ -162,8 +192,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if let open { editor.show(open) }
         restored = true
         if let url = editor.url { session.openDraft = url }
+        updateNotes()
         switch session.focus {
         case .list: list.focusKeepingSelection()
+        case .notes where !notesItem.isCollapsed: notesEditor.focus()
         case .outline where !outlineItem.isCollapsed: outline.focus()
         default: editor.focus()
         }
@@ -174,9 +206,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// next launch.
     func recordState() {
         editor.recordPosition()
+        notesEditor.recordPosition()
         let responder = window?.firstResponder as? NSView
         if responder === editor.textView {
             session.focus = .editor
+        } else if responder === notesEditor.textView {
+            session.focus = .notes
         } else if let responder, responder.isDescendant(of: outline.view) {
             session.focus = .outline
         } else if let responder, responder.isDescendant(of: list.view) {
@@ -282,21 +317,107 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
-    @objc func openNotes(_ sender: Any?) {
-        guard let url = target(sender) else { return }
-        if DraftsDirectory.isNotesName(url.lastPathComponent), store.draft(at: url) == nil {
-            // In the notes already: go back to the draft they are about.
-            open(url.deletingLastPathComponent().appendingPathComponent(
-                String(url.lastPathComponent.dropLast(DraftsDirectory.notesSuffix.count)) + ".md"))
+    // MARK: Notes
+
+    /// The draft the notes pane is about: the one on screen, unless that is
+    /// itself a notes file, whose notes are itself.
+    private var notesOwner: URL? {
+        guard let url = editor.url, DraftsDirectory.notes(for: url) != url else { return nil }
+        return url
+    }
+
+    private var notesFocused: Bool {
+        (window?.firstResponder as? NSView)?.isDescendant(of: notesEditor.view) ?? false
+    }
+
+    /// Keeps the pane in step with the draft: its notes are shown when it
+    /// has some, unless they were put away.
+    private func updateNotes() {
+        guard let owner = notesOwner else {
+            notesEditor.show(nil)
+            notesItem.isCollapsed = true
             return
         }
-        let draft = store.draft(at: url) ?? Draft(url: url, folder: .inbox, title: editor.currentTitle,
-                                                  snippet: "", text: "", modified: Date(), name: url.lastPathComponent)
+        let notes = DraftsDirectory.notes(for: owner)
+        if FileManager.default.fileExists(atPath: notes.path), !session.notesHidden(for: owner) {
+            notesEditor.show(notes)
+            expandNotes(animated: false)
+        } else {
+            notesEditor.show(nil)
+            notesItem.isCollapsed = true
+        }
+    }
+
+    /// Brings the notes up and goes to them, making them if there are none.
+    private func showNotes() {
+        if editor.isNew { editor.saveNow() }  // a draft with no file has nowhere for notes to go
+        guard let owner = notesOwner else {
+            NSSound.beep()
+            return
+        }
         do {
-            open(try store.notes(for: draft))
+            let existed = FileManager.default.fileExists(atPath: DraftsDirectory.notes(for: owner).path)
+            let notes = try store.notes(for: owner, title: editor.currentTitle)
+            session.setNotesHidden(false, for: owner)
+            notesEditor.show(notes)
+            if !existed { notesEditor.moveToEnd() }  // below the heading they open with
+            expandNotes(animated: true)
+            notesEditor.focus()
         } catch {
             presentError(error)
         }
+    }
+
+    /// Opens the pane at the height it was left at; the first time, or if
+    /// it was left squeezed to nothing, at a third of the page.
+    private func expandNotes(animated: Bool) {
+        guard notesItem.isCollapsed else { return }
+        let splitView = pages.splitView
+        // Sized once the pane is out: mid-animation it is still no height.
+        let size = { [weak self] in
+            guard let self else { return }
+            splitView.layoutSubtreeIfNeeded()
+            let height = splitView.bounds.height
+            if notesItem.viewController.view.frame.height < 140, height > 300 {
+                splitView.setPosition(round(height * 0.66), ofDividerAt: 0)
+            }
+        }
+        guard animated else {
+            notesItem.isCollapsed = false
+            size()
+            return
+        }
+        NSAnimationContext.runAnimationGroup({ _ in
+            notesItem.animator().isCollapsed = false
+        }, completionHandler: { MainActor.assumeIsolated { size() } })
+    }
+
+    /// Puts the notes away, and keeps them away for this draft.
+    private func hideNotes() {
+        guard !notesItem.isCollapsed else { return }
+        let hadFocus = notesFocused
+        notesEditor.saveNow()
+        notesEditor.recordPosition()
+        if let owner = notesOwner { session.setNotesHidden(true, for: owner) }
+        notesItem.animator().isCollapsed = true
+        if hadFocus { editor.focus() }
+    }
+
+    /// ⌘J: bring up the notes and go to them; from the notes, put them away.
+    @objc func toggleNotes(_ sender: Any?) {
+        if notesItem.isCollapsed {
+            showNotes()
+        } else if notesFocused {
+            hideNotes()
+        } else {
+            notesEditor.focus()
+        }
+    }
+
+    /// From a row's menu: that draft, with its notes up.
+    @objc func openNotes(_ sender: Any?) {
+        if let url = target(sender), url.standardizedFileURL != editor.url { open(url) }
+        showNotes()
     }
 
     @objc func revealInFinder(_ sender: Any?) {
@@ -345,9 +466,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         listSelected(rows[next].url)
     }
 
-    @objc func makeTextBigger(_ sender: Any?) { editor.makeTextBigger(sender) }
-    @objc func makeTextSmaller(_ sender: Any?) { editor.makeTextSmaller(sender) }
-    @objc func makeTextStandardSize(_ sender: Any?) { editor.makeTextStandardSize(sender) }
+    /// Type size is the notes' own while in the notes, the draft's elsewhere.
+    private var focusedEditor: EditorViewController { notesFocused ? notesEditor : editor }
+    @objc func makeTextBigger(_ sender: Any?) { focusedEditor.makeTextBigger(sender) }
+    @objc func makeTextSmaller(_ sender: Any?) { focusedEditor.makeTextSmaller(sender) }
+    @objc func makeTextStandardSize(_ sender: Any?) { focusedEditor.makeTextStandardSize(sender) }
 
     // MARK: Commands for ⌘K
 
@@ -359,7 +482,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             QuickCommand(title: archived ? "Move Draft to Inbox" : "Archive Draft", symbol: archived ? "tray.and.arrow.up" : "archivebox",
                          shortcut: "⌃⌘A", isEnabled: hasDraft) { [weak self] in self?.toggleArchive(nil) },
             QuickCommand(title: "Rename Draft to Match Title", symbol: "character.cursor.ibeam", isEnabled: hasDraft) { [weak self] in self?.renameToTitle(nil) },
-            QuickCommand(title: "Open Notes", symbol: "note.text", shortcut: "⌥⌘N", isEnabled: hasDraft) { [weak self] in self?.openNotes(nil) },
+            QuickCommand(title: notesItem.isCollapsed ? "Show Notes" : "Hide Notes", symbol: "note.text", shortcut: "⌘J",
+                         isEnabled: hasDraft) { [weak self] in self?.toggleNotes(nil) },
             QuickCommand(title: "Show Inbox", symbol: "tray", shortcut: "⌘1") { [weak self] in self?.showInbox(nil) },
             QuickCommand(title: "Show Archive", symbol: "archivebox", shortcut: "⌘2") { [weak self] in self?.showArchive(nil) },
             QuickCommand(title: "Show Timeline", symbol: "clock", shortcut: "⌘3") { [weak self] in self?.showTimeline(nil) },
@@ -405,12 +529,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(renameToTitle(_:)), #selector(copyPath(_:)):
             return editor.url != nil
         case #selector(openNotes(_:)):
-            if let url = editor.url, DraftsDirectory.isNotesName(url.lastPathComponent), store.draft(at: url) == nil {
-                title("Back to Draft")
-            } else {
-                title("Open Notes")
-            }
-            return editor.url != nil
+            return true
+        case #selector(toggleNotes(_:)):
+            title(notesItem.isCollapsed ? "Show Notes" : "Hide Notes")
+            return notesOwner != nil || editor.isNew
         case #selector(saveDraft(_:)):
             return editor.isShowingDraft
         case #selector(goToHeading(_:)), #selector(nextHeading(_:)), #selector(previousHeading(_:)):

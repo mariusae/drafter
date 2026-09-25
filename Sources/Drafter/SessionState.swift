@@ -21,7 +21,7 @@ final class SessionState {
         var used: Date
     }
 
-    enum Focus: String, Codable { case list, editor, outline }
+    enum Focus: String, Codable { case list, editor, notes, outline }
 
     private struct Stored: Codable {
         var positions: [String: Position] = [:]
@@ -29,6 +29,8 @@ final class SessionState {
         var listMode: Int?
         var timelineEntry: String?
         var focus: Focus?
+        /// Drafts whose notes were put away, and are to stay away.
+        var hiddenNotes: Set<String>?
     }
 
     private var stored = Stored()
@@ -49,8 +51,10 @@ final class SessionState {
             stored = decoded
         }
         // Before there was a state file, the open draft was a default.
+        // A state file named for testing is a world of its own.
         let legacy = "LastDraftPath"
-        if let path = UserDefaults.standard.string(forKey: legacy) {
+        if ProcessInfo.processInfo.environment["DRAFTER_STATE_FILE"] == nil,
+           let path = UserDefaults.standard.string(forKey: legacy) {
             if stored.openDraft == nil { stored.openDraft = URL(fileURLWithPath: path).standardizedFileURL.path }
             UserDefaults.standard.removeObject(forKey: legacy)
         }
@@ -75,6 +79,20 @@ final class SessionState {
             }
         }
         if stored.openDraft == Self.key(old) { stored.openDraft = Self.key(new) }
+        if stored.hiddenNotes?.remove(Self.key(old)) != nil { stored.hiddenNotes?.insert(Self.key(new)) }
+        scheduleSave()
+    }
+
+    /// Whether a draft's notes were dismissed. Notes that exist are shown
+    /// unless they were.
+    func notesHidden(for draft: URL) -> Bool {
+        stored.hiddenNotes?.contains(Self.key(draft)) ?? false
+    }
+
+    func setNotesHidden(_ hidden: Bool, for draft: URL) {
+        var set = stored.hiddenNotes ?? []
+        if hidden { set.insert(Self.key(draft)) } else { set.remove(Self.key(draft)) }
+        stored.hiddenNotes = set
         scheduleSave()
     }
 

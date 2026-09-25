@@ -5,12 +5,14 @@ import DrafterCore
 final class DraftTextView: NSTextView {
     static let columnWidth: CGFloat = 700
     var onEscape: (() -> Void)?
+    /// The margin above and below the text.
+    var verticalInset: CGFloat = 36
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         let horizontal = max(36, (newSize.width - Self.columnWidth) / 2)
-        if textContainerInset.width != horizontal {
-            textContainerInset = NSSize(width: horizontal, height: 36)
+        if textContainerInset.width != horizontal || textContainerInset.height != verticalInset {
+            textContainerInset = NSSize(width: horizontal, height: verticalInset)
         }
     }
 
@@ -26,8 +28,29 @@ final class DraftTextView: NSTextView {
 /// something in it: its first save names it after what was written.
 @MainActor
 final class EditorViewController: NSViewController, NSTextViewDelegate {
+    /// A draft, or the notes beside one. Notes are the same Markdown, set a
+    /// little smaller on a page a shade apart, so the two never blur.
+    enum Role {
+        case draft, notes
+
+        var fontSizeKey: String { self == .draft ? "EditorFontSize" : "NotesFontSize" }
+        var defaultFontSize: CGFloat { self == .draft ? 17 : 15 }
+        var background: NSColor {
+            self == .draft ? .textBackgroundColor
+                : NSColor(name: nil) { appearance in
+                    let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                    return dark ? NSColor(white: 0.155, alpha: 1) : NSColor(white: 0.975, alpha: 1)
+                }
+        }
+    }
+
     let store: DraftStore
-    private(set) var url: URL?
+    let role: Role
+    private(set) var url: URL? {
+        didSet { if oldValue != url { onURLChange?() } }
+    }
+    /// Told when the file on screen changes: another draft, a move, a delete.
+    var onURLChange: (() -> Void)?
     private(set) var isNew = false
     private var savedText = ""
     private var saveTimer: Timer?
@@ -54,8 +77,6 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private var placeholder: NSTextField!
     private let styler: MarkdownStyler
 
-    static let defaultFontSize: CGFloat = 17
-    static let fontSizeKey = "EditorFontSize"
 
     var isDirty: Bool { textView.string != savedText }
     var isShowingDraft: Bool { url != nil || isNew }
@@ -64,10 +85,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         return title.isEmpty ? "Untitled" : title
     }
 
-    init(store: DraftStore) {
+    init(store: DraftStore, role: Role = .draft) {
         self.store = store
-        let size = UserDefaults.standard.double(forKey: Self.fontSizeKey)
-        styler = MarkdownStyler(fontSize: size > 0 ? size : Self.defaultFontSize)
+        self.role = role
+        let size = UserDefaults.standard.double(forKey: role.fontSizeKey)
+        styler = MarkdownStyler(fontSize: size > 0 ? size : role.defaultFontSize)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -79,7 +101,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
+        scrollView.backgroundColor = role.background
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         textView = DraftTextView(usingTextLayoutManager: true)
@@ -90,7 +112,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
+        textView.backgroundColor = role.background
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
@@ -108,13 +130,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.textStorage?.delegate = styler
         textView.delegate = self
         textView.onEscape = { [weak self] in self?.onEscape?() }
-        textView.setAccessibilityLabel("Draft")
+        textView.verticalInset = role == .draft ? 36 : 14
+        textView.setAccessibilityLabel(role == .draft ? "Draft" : "Notes")
         scrollView.documentView = textView
         scrollView.contentView.postsBoundsChangedNotifications = true
         NotificationCenter.default.addObserver(self, selector: #selector(didScroll),
                                                name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
 
-        placeholder = NSTextField(labelWithString: "No Draft Selected")
+        placeholder = NSTextField(labelWithString: role == .draft ? "No Draft Selected" : "")
         placeholder.font = .systemFont(ofSize: 20, weight: .regular)
         placeholder.textColor = .tertiaryLabelColor
         placeholder.translatesAutoresizingMaskIntoConstraints = false
@@ -141,6 +164,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// Shows a draft, saving whatever was on screen first.
     /// Otherwise it opens where it was left: the same cursor, the same scroll.
     func show(_ url: URL?, selecting range: NSRange? = nil) {
+        loadViewIfNeeded()  // a pane that starts collapsed has not built its view yet
         if url?.standardizedFileURL == self.url, url != nil {
             if let range { select(range) }
             return
@@ -154,8 +178,16 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         if let range { select(range) } else { restorePosition() }
     }
 
+    /// Puts the cursor at the end, where writing goes on.
+    func moveToEnd() {
+        let end = (textView.string as NSString).length
+        textView.setSelectedRange(NSRange(location: end, length: 0))
+        textView.scrollRangeToVisible(NSRange(location: end, length: 0))
+    }
+
     /// Begins a draft that is not yet a file.
     func beginNew() {
+        loadViewIfNeeded()
         saveNow()
         recordPosition()
         url = nil
@@ -429,12 +461,12 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     @objc func makeTextBigger(_ sender: Any?) { setFontSize(styler.fontSize + 1) }
     @objc func makeTextSmaller(_ sender: Any?) { setFontSize(styler.fontSize - 1) }
-    @objc func makeTextStandardSize(_ sender: Any?) { setFontSize(Self.defaultFontSize) }
+    @objc func makeTextStandardSize(_ sender: Any?) { setFontSize(role.defaultFontSize) }
 
     private func setFontSize(_ size: CGFloat) {
         let size = min(max(size, 11), 36)
         styler.fontSize = size
-        UserDefaults.standard.set(size, forKey: Self.fontSizeKey)
+        UserDefaults.standard.set(size, forKey: role.fontSizeKey)
         textView.typingAttributes = styler.baseAttributes
         if let storage = textView.textStorage { styler.styleAll(storage) }
     }

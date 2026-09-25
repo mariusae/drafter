@@ -24,7 +24,7 @@ enum MainMenu {
 
         main.addItem(submenu("File", [
             item("New Draft", #selector(MainWindowController.newDraft(_:)), "n"),
-            item("Open Notes", #selector(MainWindowController.openNotes(_:)), "n", [.command, .option]),
+            item("Show Notes", #selector(MainWindowController.toggleNotes(_:)), "j"),
             .separator(),
             item("Save", #selector(MainWindowController.saveDraft(_:)), "s"),
             item("Rename to Match Title", #selector(MainWindowController.renameToTitle(_:))),
@@ -41,7 +41,7 @@ enum MainMenu {
             findItem("Find Next", .nextMatch, "g"),
             findItem("Find Previous", .previousMatch, "g", [.command, .shift]),
             findItem("Use Selection for Find", .setSearchString, "e"),
-            item("Jump to Selection", #selector(NSResponder.centerSelectionInVisibleArea(_:)), "j"),
+            item("Jump to Selection", #selector(NSResponder.centerSelectionInVisibleArea(_:)), "j", [.command, .option]),
         ])
         let spelling = submenu("Spelling and Grammar", [
             item("Show Spelling and Grammar", #selector(NSText.showGuessPanel(_:)), ":"),

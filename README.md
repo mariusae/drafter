@@ -34,6 +34,15 @@ you are in as you type or scroll, and takes you there on a click or as you
 arrow through it. ⇧⌘O (or `@` in ⌘K) finds a heading by name; ⌃⌘↓ and ⌃⌘↑
 step through them.
 
+## Notes
+
+Beside a draft may lie its notes, `<name>-notes.md`. When a draft has notes
+they sit in a pane under it, which can be resized and dismissed; ⌘J brings it
+back (making the notes file, headed `# Notes on <title>`, if there is none)
+and takes you there, and ⌘J from inside the notes puts it away again. A
+draft whose notes you dismissed keeps them dismissed until you ask. Notes
+move with their draft when it is archived or renamed.
+
 ## Picking up where you left off
 
 Every draft remembers its cursor, selection and scroll, across switching
@@ -51,7 +60,8 @@ The directory is `$DRAFTS_DIR`, else `~/drafts`, or whatever ⌘, chooses.
 |---|---|
 | ⌘K | Go to anything: drafts by title, lines by text, `@` headings, `>` commands |
 | ⇧⌘K | Run command |
-| ⌘N / ⌥⌘N | New draft / open notes |
+| ⌘N | New draft |
+| ⌘J | Show notes and go to them; from the notes, hide them |
 | ⌘1 / ⌘2 / ⌘3 | Inbox / Archive / Timeline |
 | ⇧⌘O, ⌃⌘↓ / ⌃⌘↑ | Go to heading, next / previous heading |
 | ⌥⌘I, ⌥⌘O | Show outline, move into it |
