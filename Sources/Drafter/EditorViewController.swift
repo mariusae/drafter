@@ -36,6 +36,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     var onFiled: ((URL) -> Void)?
     var onEscape: (() -> Void)?
     var onTitleChange: (() -> Void)?
+    /// Told when the headings change, and when the section being written or
+    /// read moves to another heading.
+    var onHeadingsChange: (() -> Void)?
+    var onCurrentHeadingChange: (() -> Void)?
+
+    private(set) var headings: [MarkdownDocument.Heading] = []
+    private(set) var currentHeading: Int?
+    private var outlineTimer: Timer?
 
     private var scrollView: NSScrollView!
     private(set) var textView: DraftTextView!
@@ -98,6 +106,9 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.onEscape = { [weak self] in self?.onEscape?() }
         textView.setAccessibilityLabel("Draft")
         scrollView.documentView = textView
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(didScroll),
+                                               name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
 
         placeholder = NSTextField(labelWithString: "No Draft Selected")
         placeholder.font = .systemFont(ofSize: 20, weight: .regular)
@@ -154,6 +165,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         textView.undoManager?.removeAllActions()
         textView.scroll(.zero)
         updatePlaceholder()
+        refreshHeadings()
         onTitleChange?()
     }
 
@@ -185,6 +197,114 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             MainActor.assumeIsolated { self?.saveNow() }
         }
         onTitleChange?()
+        outlineTimer?.invalidate()
+        outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshHeadings() }
+        }
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        updateCurrentHeading()
+    }
+
+    @objc private func didScroll() {
+        updateCurrentHeading()
+    }
+
+    // MARK: Outline
+
+    private func refreshHeadings() {
+        let fresh = isShowingDraft ? MarkdownDocument(textView.string).headings : []
+        if fresh != headings {
+            headings = fresh
+            onHeadingsChange?()
+        }
+        currentHeading = nil
+        updateCurrentHeading(force: true)
+    }
+
+    /// The section being worked in: where the cursor is when it is on screen,
+    /// else where the reader has scrolled to.
+    private func updateCurrentHeading(force: Bool = false) {
+        guard !headings.isEmpty else {
+            if currentHeading != nil || force {
+                currentHeading = nil
+                onCurrentHeadingChange?()
+            }
+            return
+        }
+        // The page scrolls under the toolbar: what can be read begins below
+        // the content inset, not at the top of the visible rect.
+        let visible = textView.visibleRect
+        let inset = scrollView.contentView.contentInsets.top
+        // A point in the page's margin is in no line, and is answered with the
+        // end of the text; so the point is kept within the text.
+        let top = textView.characterIndexForInsertion(
+            at: NSPoint(x: visible.midX, y: max(visible.minY + inset, textView.textContainerInset.height) + 1))
+        let bottom = textView.characterIndexForInsertion(at: NSPoint(x: visible.midX, y: visible.maxY - 1))
+        let cursor = textView.selectedRange().location
+        let anchor = (top...max(top, bottom)).contains(cursor) ? cursor : top
+        let index = headings.lastIndex { $0.range.location <= anchor }
+        if index != currentHeading || force {
+            currentHeading = index
+            onCurrentHeadingChange?()
+        }
+    }
+
+    /// Moves to a heading, bringing it to the top of the page.
+    func goToHeading(_ index: Int) {
+        guard headings.indices.contains(index) else { return }
+        reveal(headings[index].range, atTop: true, flash: false)
+    }
+
+    @objc func nextHeading(_ sender: Any?) {
+        let cursor = textView.selectedRange().location
+        if let next = headings.firstIndex(where: { $0.range.location > cursor }) { goToHeading(next) }
+    }
+
+    @objc func previousHeading(_ sender: Any?) {
+        let cursor = textView.selectedRange().location
+        if let previous = headings.lastIndex(where: { $0.range.location < cursor }) { goToHeading(previous) }
+    }
+
+    /// Puts the cursor at the start of a range and shows it: at the top of
+    /// the page when asked, and flashed so the eye finds it.
+    func reveal(_ range: NSRange, atTop: Bool, flash: Bool) {
+        let length = (textView.string as NSString).length
+        guard range.location <= length else { return }
+        let range = NSRange(location: range.location, length: min(range.length, length - range.location))
+        textView.setSelectedRange(NSRange(location: range.location, length: 0))
+        textView.scrollRangeToVisible(range)
+        if atTop, let window = textView.window {
+            let screen = textView.firstRect(forCharacterRange: range, actualRange: nil)
+            let local = textView.convert(window.convertFromScreen(screen), from: nil)
+            let inset = scrollView.contentView.contentInsets.top
+            let limit = max(-inset, textView.frame.height - scrollView.contentView.bounds.height)
+            let y = min(max(-inset, local.minY - 28 - inset), limit)
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        if flash, range.length > 0 { textView.showFindIndicator(for: range) }
+        view.window?.makeFirstResponder(textView)
+        updateCurrentHeading(force: true)
+    }
+
+    /// The range of whole lines, 1-based and inclusive, clamped to the text.
+    func rangeOfLines(_ first: Int, _ last: Int) -> NSRange {
+        let text = textView.string as NSString
+        var line = 1, start = 0, location = 0, end = text.length
+        while location < text.length {
+            let lineRange = text.lineRange(for: NSRange(location: location, length: 0))
+            if line == first { start = lineRange.location }
+            if line == last {
+                end = NSMaxRange(lineRange)
+                break
+            }
+            line += 1
+            location = NSMaxRange(lineRange)
+        }
+        if first > line { start = text.length }
+        return NSRange(location: start, length: max(0, end - start))
     }
 
     /// Writes what is on screen, if it differs from what is on disk.

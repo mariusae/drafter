@@ -1,18 +1,30 @@
 import AppKit
 import DrafterCore
 
+/// What the left column is showing: a folder's drafts, or the timeline.
+enum ListMode: Int {
+    case inbox, archive, timeline
+
+    var name: String { ["Inbox", "Archive", "Timeline"][rawValue] }
+    var folder: Folder? { self == .timeline ? nil : Folder(rawValue: rawValue) }
+    init(_ folder: Folder) { self = folder == .inbox ? .inbox : .archive }
+}
+
 /// The left column: the drafts of one folder, newest first, in the manner of
 /// NetNewsWire's timeline — a bold title, a few lines of what follows it, and
-/// when it was last touched.
+/// when it was last touched. Or the timeline: what was written lately, as the
+/// blocks that moved.
 @MainActor
 final class DraftListViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     let store: DraftStore
-    private(set) var folder: Folder = .inbox
+    private(set) var mode: ListMode = .inbox
     private(set) var rows: [Draft] = []
+    private(set) var changes: [TimelineChange] = []
 
     var onSelect: ((URL?) -> Void)?
+    var onSelectChange: ((TimelineChange) -> Void)?
     var onReturn: (() -> Void)?
-    var onFolderChange: ((Folder) -> Void)?
+    var onModeChange: ((ListMode) -> Void)?
     /// The context menu's actions go to whoever handles them for the window.
     weak var actionTarget: AnyObject?
 
@@ -21,6 +33,7 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
     private var statusField: NSTextField!
     private var statusSpinner: NSProgressIndicator!
     private var statusTimer: Timer?
+    private var emptyField: NSTextField!
     private var suppressSelection = false
 
     init(store: DraftStore) {
@@ -32,18 +45,29 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
 
     var selectedURL: URL? {
         let row = tableView.selectedRow
-        return row >= 0 && row < rows.count ? rows[row].url : nil
+        return mode != .timeline && row >= 0 && row < rows.count ? rows[row].url : nil
     }
 
+    private var selectedChangeID: String? {
+        let row = tableView.selectedRow
+        return mode == .timeline && row >= 0 && row < changes.count ? changes[row].id : nil
+    }
+
+    /// The draft a context menu is about: the row's draft, or a timeline
+    /// entry's.
     var clickedOrSelectedDraft: Draft? {
         let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
+        if mode == .timeline {
+            guard row >= 0, row < changes.count else { return nil }
+            return store.draft(at: store.directory.root.appendingPathComponent(changes[row].name))
+        }
         return row >= 0 && row < rows.count ? rows[row] : nil
     }
 
     override func loadView() {
         let container = NSView()
 
-        folderControl = NSSegmentedControl(labels: Folder.allCases.map(\.name), trackingMode: .selectOne,
+        folderControl = NSSegmentedControl(labels: ["Inbox", "Archive", "Timeline"], trackingMode: .selectOne,
                                            target: self, action: #selector(folderControlChanged))
         folderControl.selectedSegment = 0
         folderControl.segmentDistribution = .fillEqually
@@ -51,6 +75,7 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
         folderControl.translatesAutoresizingMaskIntoConstraints = false
         folderControl.setToolTip("Inbox (⌘1)", forSegment: 0)
         folderControl.setToolTip("Archive (⌘2)", forSegment: 1)
+        folderControl.setToolTip("Timeline: what was written lately (⌘3)", forSegment: 2)
 
         tableView = DraftTableView()
         tableView.style = .sourceList
@@ -89,7 +114,13 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
         statusSpinner.isDisplayedWhenStopped = false
         statusSpinner.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [folderControl!, scrollView, statusField!, statusSpinner!] as [NSView] {
+        emptyField = NSTextField(labelWithString: "")
+        emptyField.font = .systemFont(ofSize: 13)
+        emptyField.textColor = .tertiaryLabelColor
+        emptyField.alignment = .center
+        emptyField.translatesAutoresizingMaskIntoConstraints = false
+
+        for view in [folderControl!, scrollView, statusField!, statusSpinner!, emptyField!] as [NSView] {
             container.addSubview(view)
         }
         NSLayoutConstraint.activate([
@@ -107,12 +138,16 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
             statusField.leadingAnchor.constraint(equalTo: statusSpinner.trailingAnchor, constant: 4),
             statusField.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -14),
             statusField.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -10),
+
+            emptyField.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            emptyField.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor, constant: -40),
         ])
         view = container
 
         let center = NotificationCenter.default
         center.addObserver(self, selector: #selector(draftsDidChange), name: .draftsDidChange, object: store)
         center.addObserver(self, selector: #selector(updateStatus), name: .syncStatusDidChange, object: store)
+        center.addObserver(self, selector: #selector(timelineDidChange), name: .timelineDidChange, object: store)
         statusTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.updateStatus() }
         }
@@ -121,39 +156,93 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
 
     func focus() {
         view.window?.makeFirstResponder(tableView)
-        if tableView.selectedRow < 0, !rows.isEmpty {
+        if tableView.selectedRow < 0, tableView.numberOfRows > 0 {
             tableView.selectRowIndexes([0], byExtendingSelection: false)
         }
     }
 
-    // MARK: Folder
+    /// Takes the keyboard back without touching the selection.
+    func focusKeepingSelection() {
+        view.window?.makeFirstResponder(tableView)
+    }
+
+    // MARK: Mode
 
     @objc private func folderControlChanged() {
-        show(folder: Folder(rawValue: folderControl.selectedSegment) ?? .inbox, select: nil)
+        let mode = ListMode(rawValue: folderControl.selectedSegment) ?? .inbox
+        if let folder = mode.folder { show(folder: folder, select: nil) } else { showTimeline() }
     }
 
     /// Shows a folder, and a draft in it when one is named. Switching folders
     /// otherwise selects its newest draft.
     func show(folder: Folder, select url: URL?) {
-        let changed = folder != self.folder
-        self.folder = folder
-        folderControl.selectedSegment = folder.rawValue
+        let changed = setMode(ListMode(folder))
         reloadRows(keeping: url ?? (changed ? nil : selectedURL))
+        if changed, url == nil { onSelect?(selectedURL) }
+    }
+
+    /// Shows the timeline. The draft on screen stays where it is until an
+    /// entry is chosen.
+    func showTimeline() {
+        guard setMode(.timeline) else { return }
+        reloadChanges(keeping: nil)
+    }
+
+    private func setMode(_ mode: ListMode) -> Bool {
+        let changed = mode != self.mode
+        self.mode = mode
+        folderControl.selectedSegment = mode.rawValue
+        store.wantsTimeline = mode == .timeline
         if changed {
-            onFolderChange?(folder)
-            if url == nil { onSelect?(selectedURL) }
+            rows = []
+            changes = []
+            tableView.reloadData()
+            onModeChange?(mode)
         }
+        return changed
     }
 
     // MARK: Rows
 
     @objc private func draftsDidChange() {
+        guard mode != .timeline else { return }
         reloadRows(keeping: selectedURL)
+    }
+
+    @objc private func timelineDidChange() {
+        guard mode == .timeline else { return }
+        reloadChanges(keeping: selectedChangeID)
+    }
+
+    private func reloadChanges(keeping id: String?) {
+        suppressSelection = true
+        defer { suppressSelection = false }
+        let fresh = store.timeline
+        if fresh != changes {
+            changes = fresh
+            tableView.reloadData()
+        }
+        if let id, let index = changes.firstIndex(where: { $0.id == id }) {
+            tableView.selectRowIndexes([index], byExtendingSelection: false)
+        }
+        updateEmpty()
+    }
+
+    private func updateEmpty() {
+        switch mode {
+        case .timeline:
+            emptyField.stringValue = store.timelineLoaded ? "Nothing written yet" : "Reading history…"
+            emptyField.isHidden = !changes.isEmpty
+        case .inbox, .archive:
+            emptyField.stringValue = mode == .inbox ? "No Drafts" : "Nothing Archived"
+            emptyField.isHidden = !rows.isEmpty
+        }
     }
 
     /// Re-reads the rows from the store, keeping the selection on the same
     /// draft wherever it has moved to.
     private func reloadRows(keeping url: URL?) {
+        guard let folder = mode.folder else { return }
         let fresh = store.drafts(in: folder)
         suppressSelection = true
         defer { suppressSelection = false }
@@ -176,31 +265,44 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
         } else if tableView.selectedRow >= 0 {
             tableView.deselectAll(nil)
         }
+        updateEmpty()
     }
 
     func select(_ url: URL?) {
         reloadRows(keeping: url)
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { mode == .timeline ? changes.count : rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        if mode == .timeline {
+            let cell = tableView.makeView(withIdentifier: TimelineCellView.identifier, owner: self) as? TimelineCellView ?? TimelineCellView()
+            cell.configure(with: changes[row])
+            return cell
+        }
         let cell = tableView.makeView(withIdentifier: DraftCellView.identifier, owner: self) as? DraftCellView ?? DraftCellView()
         cell.configure(with: rows[row])
         return cell
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        DraftCellView.height(for: rows[row], width: tableView.tableColumns[0].width)
+        let width = tableView.tableColumns[0].width
+        if mode == .timeline { return TimelineCellView.height(for: changes[row], width: width) }
+        return DraftCellView.height(for: rows[row], width: width)
     }
 
     func tableViewColumnDidResize(_ notification: Notification) {
-        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(rows.indices))
+        tableView.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<tableView.numberOfRows))
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !suppressSelection else { return }
-        onSelect?(selectedURL)
+        if mode == .timeline {
+            let row = tableView.selectedRow
+            if row >= 0, row < changes.count { onSelectChange?(changes[row]) }
+        } else {
+            onSelect?(selectedURL)
+        }
     }
 
     // MARK: Context menu
@@ -393,5 +495,116 @@ final class DraftCellView: NSTableCellView {
             return date.formatted(.dateTime.month(.abbreviated).day())
         }
         return date.formatted(date: .numeric, time: .omitted)
+    }
+}
+
+/// A timeline entry: which draft, when, and the blocks that moved, as written.
+final class TimelineCellView: NSTableCellView {
+    static let identifier = NSUserInterfaceItemIdentifier("TimelineCell")
+    static let maxLines = 8
+    static let excerptFont = NSFont.systemFont(ofSize: 12)
+
+    private let titleField = NSTextField(labelWithString: "")
+    private let excerptField = NSTextField(wrappingLabelWithString: "")
+    private let timeField = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        identifier = Self.identifier
+        titleField.font = DraftCellView.titleFont
+        titleField.lineBreakMode = .byTruncatingTail
+        excerptField.font = Self.excerptFont
+        excerptField.maximumNumberOfLines = Self.maxLines
+        excerptField.lineBreakMode = .byWordWrapping
+        excerptField.cell?.truncatesLastVisibleLine = true
+        timeField.font = .systemFont(ofSize: 11)
+        timeField.alignment = .right
+
+        for field in [titleField, excerptField, timeField] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.isSelectable = false
+            addSubview(field)
+        }
+        titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        excerptField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        timeField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        timeField.setContentHuggingPriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            titleField.trailingAnchor.constraint(lessThanOrEqualTo: timeField.leadingAnchor, constant: -6),
+            timeField.firstBaselineAnchor.constraint(equalTo: titleField.firstBaselineAnchor),
+            timeField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            excerptField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 3),
+            excerptField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            excerptField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+        ])
+        updateColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(with change: TimelineChange) {
+        titleField.stringValue = change.title.isEmpty ? "Untitled" : change.title
+        timeField.stringValue = Self.format(change.when)
+        excerptField.stringValue = Self.excerpt(change)
+        setAccessibilityLabel("\(titleField.stringValue), \(timeField.stringValue)")
+        toolTip = change.name
+    }
+
+    static func height(for change: TimelineChange, width: CGFloat) -> CGFloat {
+        let titleHeight = ceil(DraftCellView.titleFont.ascender - DraftCellView.titleFont.descender + DraftCellView.titleFont.leading)
+        let line = ceil(excerptFont.ascender - excerptFont.descender + excerptFont.leading)
+        let bounds = (excerpt(change) as NSString).boundingRect(
+            with: NSSize(width: max(width - 16, 1), height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: excerptFont])
+        return 8 + titleHeight + 3 + min(ceil(bounds.height), line * CGFloat(maxLines)) + 10
+    }
+
+    /// The blocks, each dedented to itself, runs of blank lines closed up,
+    /// and an ellipsis between blocks that are apart in the draft.
+    static func excerpt(_ change: TimelineChange) -> String {
+        change.blocks.map { block in
+            let lines = block.text.components(separatedBy: "\n")
+            let indent = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { $0.prefix(while: { $0 == " " || $0 == "\t" }).count }.min() ?? 0
+            var result: [String] = []
+            for line in lines {
+                let text = String(line.dropFirst(min(indent, line.prefix(while: { $0 == " " || $0 == "\t" }).count)))
+                if text.trimmingCharacters(in: .whitespaces).isEmpty, result.last?.isEmpty ?? true { continue }
+                result.append(text.trimmingCharacters(in: .whitespaces).isEmpty ? "" : text)
+            }
+            return result.joined(separator: "\n")
+        }.joined(separator: "\n…\n")
+    }
+
+    /// The resolution that tells writing apart: the time today, the weekday
+    /// and time this week, the date beyond.
+    static func format(_ date: Date) -> String {
+        let calendar = Calendar.current
+        let time = date.formatted(date: .omitted, time: .shortened)
+        if calendar.isDateInToday(date) { return time }
+        if calendar.isDateInYesterday(date) { return "Yesterday \(time)" }
+        if let days = calendar.dateComponents([.day], from: date, to: Date()).day, days < 7 {
+            return "\(date.formatted(.dateTime.weekday(.abbreviated))) \(time)"
+        }
+        return DraftCellView.format(date)
+    }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { updateColors() }
+    }
+
+    override func layout() {
+        let width = max(0, bounds.width - 16)
+        if excerptField.preferredMaxLayoutWidth != width { excerptField.preferredMaxLayoutWidth = width }
+        super.layout()
+    }
+
+    private func updateColors() {
+        let emphasized = backgroundStyle == .emphasized
+        titleField.textColor = emphasized ? .alternateSelectedControlTextColor : .labelColor
+        excerptField.textColor = emphasized ? .alternateSelectedControlTextColor.withAlphaComponent(0.85) : .secondaryLabelColor
+        timeField.textColor = emphasized ? .alternateSelectedControlTextColor.withAlphaComponent(0.8) : .tertiaryLabelColor
     }
 }

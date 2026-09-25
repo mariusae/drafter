@@ -14,16 +14,38 @@ rules, as [`drafts`](../cmd/drafts).
   minutes and on ⌘R. A conflicting merge is aborted and reported, never left
   behind.
 
+## Timeline
+
+⌘3 shows what was written lately, newest first, as the blocks that changed —
+the same algorithm as `drafts -t`. Changed lines from history are mapped to
+the Markdown blocks they sit in (a paragraph whole, a heading with its
+section, a list item with its subtree, a nested item as its parent's line plus
+its own branch, a table whole); overlapping blocks and blocks one blank line
+apart are joined; and saves to nearby blocks of one draft within five minutes
+fold into one entry that shows the text as it stood after that burst.
+Uncommitted writing comes first. The archive is left out. Choosing an entry
+opens the draft with the block flashed, and the keyboard stays in the
+timeline, so ↓ reads on.
+
+## Outline
+
+The inspector (⌥⌘I) shows the draft's headings as a tree, marks the section
+you are in as you type or scroll, and takes you there on a click or as you
+arrow through it. ⇧⌘O (or `@` in ⌘K) finds a heading by name; ⌃⌘↓ and ⌃⌘↑
+step through them.
+
 The directory is `$DRAFTS_DIR`, else `~/drafts`, or whatever ⌘, chooses.
 
 ## Keys
 
 | | |
 |---|---|
-| ⌘K | Go to anything: drafts by title, lines by text, `>` for commands |
+| ⌘K | Go to anything: drafts by title, lines by text, `@` headings, `>` commands |
 | ⇧⌘K | Run command |
 | ⌘N / ⌥⌘N | New draft / open notes |
-| ⌘1 / ⌘2 | Inbox / Archive |
+| ⌘1 / ⌘2 / ⌘3 | Inbox / Archive / Timeline |
+| ⇧⌘O, ⌃⌘↓ / ⌃⌘↑ | Go to heading, next / previous heading |
+| ⌥⌘I, ⌥⌘O | Show outline, move into it |
 | ⌃⌘A | Archive (or move back to Inbox) |
 | ⌥⌘↓ / ⌥⌘↑ | Next / previous draft |
 | Return, Esc | From the list into the editor, and back |

@@ -8,6 +8,14 @@ enum Snapshot {
     static func scheduleIfRequested(_ controller: MainWindowController) {
         guard let dir = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT"] else { return }
         let url = URL(fileURLWithPath: dir, isDirectory: true)
+        let env = ProcessInfo.processInfo.environment
+        if let heading = env["DRAFTER_SNAPSHOT_HEADING"].flatMap(Int.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { controller.editor.goToHeading(heading) }
+        }
+        if env["DRAFTER_SNAPSHOT_TIMELINE"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { controller.showTimeline(nil) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { controller.nextDraftOrEntry() }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
             if let query = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT_QUERY"] {
                 controller.goToAnything(query: query)

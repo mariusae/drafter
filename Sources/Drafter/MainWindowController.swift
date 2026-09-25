@@ -6,6 +6,7 @@ extension NSToolbarItem.Identifier {
     static let sync = Self("Sync")
     static let archive = Self("Archive")
     static let goToAnything = Self("GoToAnything")
+    static let outline = Self("Outline")
 }
 
 /// The one window: drafts on the left, the draft on the right.
@@ -15,7 +16,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     let store: DraftStore
     let list: DraftListViewController
     let editor: EditorViewController
+    let outline = OutlineViewController()
     private let split = NSSplitViewController()
+    private var outlineItem: NSSplitViewItem!
     private var goTo: GoToAnythingController!
     private var restored = false
 
@@ -43,8 +46,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         sidebar.allowsFullHeightLayout = true
         let content = NSSplitViewItem(viewController: editor)
         content.minimumThickness = 360
+        outlineItem = NSSplitViewItem(inspectorWithViewController: outline)
+        outlineItem.minimumThickness = 180
+        outlineItem.maximumThickness = 360
+        outlineItem.canCollapse = true
         split.addSplitViewItem(sidebar)
         split.addSplitViewItem(content)
+        split.addSplitViewItem(outlineItem)
         split.splitView.autosaveName = "MainSplit"
         window.contentViewController = split
         window.setContentSize(NSSize(width: 1180, height: 780))
@@ -60,15 +68,28 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbar = toolbar
 
         goTo = GoToAnythingController(store: store, commands: { [weak self] in self?.commands() ?? [] },
-                                      open: { [weak self] draft, range in self?.open(draft.url, selecting: range) })
+                                      headings: { [weak self] in self?.editor.headings ?? [] },
+                                      open: { [weak self] draft, range in self?.open(draft.url, selecting: range) },
+                                      goToHeading: { [weak self] index in self?.editor.goToHeading(index) })
 
         list.actionTarget = self
         list.onSelect = { [weak self] url in self?.listSelected(url) }
         list.onReturn = { [weak self] in self?.editor.focus() }
-        list.onFolderChange = { [weak self] _ in self?.updateTitle() }
+        list.onModeChange = { [weak self] _ in self?.updateTitle() }
+        list.onSelectChange = { [weak self] change in self?.open(change) }
         editor.onEscape = { [weak self] in self?.list.focus() }
         editor.onFiled = { [weak self] url in self?.list.select(url); self?.remember(url) }
         editor.onTitleChange = { [weak self] in self?.updateTitle() }
+        editor.onHeadingsChange = { [weak self] in
+            guard let self else { return }
+            outline.update(editor.headings, current: editor.currentHeading)
+        }
+        editor.onCurrentHeadingChange = { [weak self] in
+            guard let self else { return }
+            outline.mark(editor.currentHeading)
+        }
+        outline.onChoose = { [weak self] index in self?.editor.goToHeading(index) }
+        outline.onReturn = { [weak self] in self?.editor.focus() }
         store.flushPendingEdits = { [weak self] in self?.editor.saveNow() }
 
         NotificationCenter.default.addObserver(self, selector: #selector(draftsDidChange),
@@ -123,6 +144,27 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         updateTitle()
     }
 
+    /// Opens a timeline entry: the draft, at the blocks that moved. The
+    /// entry may show the draft as it stood some time ago, so the blocks are
+    /// looked for by their text before their lines are trusted.
+    private func open(_ change: TimelineChange) {
+        let url = store.directory.root.appendingPathComponent(change.name).standardizedFileURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NSSound.beep()
+            return
+        }
+        editor.show(url)
+        remember(url)
+        updateTitle()
+        guard let block = change.blocks.first else { return }
+        let text = editor.textView.string as NSString
+        let found = text.range(of: block.text)
+        let range = found.location != NSNotFound ? found : editor.rangeOfLines(block.line, block.endLine)
+        editor.reveal(range, atTop: false, flash: true)
+        // Keep the keyboard in the timeline, to read on down it.
+        list.focusKeepingSelection()
+    }
+
     private var currentDraft: Draft? { editor.url.flatMap { store.draft(at: $0) } }
 
     private func updateTitle() {
@@ -136,10 +178,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             } else {
                 window.subtitle = editor.isNew ? "New Draft" : ""
             }
-        } else {
-            window.title = list.folder.name
-            let count = store.drafts(in: list.folder).count
+        } else if let folder = list.mode.folder {
+            window.title = folder.name
+            let count = store.drafts(in: folder).count
             window.subtitle = "\(count) \(count == 1 ? "draft" : "drafts")"
+        } else {
+            window.title = "Timeline"
+            window.subtitle = ""
         }
         window.toolbar?.validateVisibleItems()
     }
@@ -229,6 +274,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func showInbox(_ sender: Any?) { list.show(folder: .inbox, select: nil); list.focus() }
     @objc func showArchive(_ sender: Any?) { list.show(folder: .archive, select: nil); list.focus() }
+    /// For snapshots: choose the first row of whatever the list shows.
+    func nextDraftOrEntry() { list.focus() }
+    @objc func showTimeline(_ sender: Any?) { list.showTimeline(); list.focus() }
+    @objc func goToHeading(_ sender: Any?) { goTo.show(over: window, query: "@") }
+    @objc func nextHeading(_ sender: Any?) { editor.nextHeading(sender) }
+    @objc func previousHeading(_ sender: Any?) { editor.previousHeading(sender) }
+    @objc func focusOutline(_ sender: Any?) {
+        if outlineItem.isCollapsed { outlineItem.animator().isCollapsed = false }
+        outline.focus()
+    }
+    @objc func toggleOutline(_ sender: Any?) { outlineItem.animator().isCollapsed.toggle() }
     @objc func syncNow(_ sender: Any?) { store.sync() }
     @objc func goToAnything(_ sender: Any?) { goTo.toggle(over: window) }
     func goToAnything(query: String) { goTo.show(over: window, query: query) }
@@ -265,6 +321,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             QuickCommand(title: "Open Notes", symbol: "note.text", shortcut: "⌥⌘N", isEnabled: hasDraft) { [weak self] in self?.openNotes(nil) },
             QuickCommand(title: "Show Inbox", symbol: "tray", shortcut: "⌘1") { [weak self] in self?.showInbox(nil) },
             QuickCommand(title: "Show Archive", symbol: "archivebox", shortcut: "⌘2") { [weak self] in self?.showArchive(nil) },
+            QuickCommand(title: "Show Timeline", symbol: "clock", shortcut: "⌘3") { [weak self] in self?.showTimeline(nil) },
+            QuickCommand(title: "Go to Heading…", symbol: "list.bullet.indent", shortcut: "⇧⌘O", isEnabled: hasDraft) { [weak self] in self?.goToHeading(nil) },
+            QuickCommand(title: "Next Heading", symbol: "chevron.down", shortcut: "⌃⌘↓", isEnabled: hasDraft) { [weak self] in self?.nextHeading(nil) },
+            QuickCommand(title: "Previous Heading", symbol: "chevron.up", shortcut: "⌃⌘↑", isEnabled: hasDraft) { [weak self] in self?.previousHeading(nil) },
+            QuickCommand(title: "Toggle Outline", symbol: "sidebar.right", shortcut: "⌥⌘I") { [weak self] in self?.toggleOutline(nil) },
             QuickCommand(title: "Sync Now", symbol: "arrow.triangle.2.circlepath", shortcut: "⌘R") { [weak self] in self?.syncNow(nil) },
             QuickCommand(title: "Show in Finder", symbol: "folder") { [weak self] in self?.revealInFinder(nil) },
             QuickCommand(title: "Copy Path", symbol: "doc.on.clipboard", isEnabled: hasDraft) { [weak self] in self?.copyPath(nil) },
@@ -311,6 +372,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return editor.url != nil
         case #selector(saveDraft(_:)):
             return editor.isShowingDraft
+        case #selector(goToHeading(_:)), #selector(nextHeading(_:)), #selector(previousHeading(_:)):
+            return !editor.headings.isEmpty
+        case #selector(toggleOutline(_:)):
+            title(outlineItem.isCollapsed ? "Show Outline" : "Hide Outline")
+            return true
         case #selector(syncNow(_:)):
             return store.git != nil
         default:
@@ -322,12 +388,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, .sync, .newDraft, .sidebarTrackingSeparator,
-         .flexibleSpace, .archive, .goToAnything]
+         .flexibleSpace, .archive, .goToAnything, .inspectorTrackingSeparator, .flexibleSpace, .outline]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [.toggleSidebar, .sidebarTrackingSeparator, .flexibleSpace, .space,
-         .newDraft, .sync, .archive, .goToAnything]
+        [.toggleSidebar, .sidebarTrackingSeparator, .inspectorTrackingSeparator, .flexibleSpace, .space,
+         .newDraft, .sync, .archive, .goToAnything, .outline]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
@@ -348,6 +414,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case .sync: return item("Sync", "arrow.triangle.2.circlepath", #selector(syncNow(_:)))
         case .archive: return item("Archive", "archivebox", #selector(toggleArchive(_:)))
         case .goToAnything: return item("Go to Anything", "magnifyingglass", #selector(goToAnything(_:)))
+        case .outline: return item("Outline", "sidebar.right", #selector(toggleOutline(_:)))
         default: return nil
         }
     }

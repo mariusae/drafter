@@ -4,6 +4,7 @@ import DrafterCore
 extension Notification.Name {
     static let draftsDidChange = Notification.Name("DrafterDraftsDidChange")
     static let syncStatusDidChange = Notification.Name("DrafterSyncStatusDidChange")
+    static let timelineDidChange = Notification.Name("DrafterTimelineDidChange")
 }
 
 enum SyncStatus: Equatable {
@@ -39,6 +40,17 @@ final class DraftStore {
     private var pushAgain = false
     private var reloadGeneration = 0
 
+    /// The timeline is read only while something is showing it: it walks
+    /// history, which is more than a hidden view deserves on every save.
+    private(set) var timeline: [TimelineChange] = []
+    private(set) var timelineLoaded = false
+    var wantsTimeline = false {
+        didSet { if wantsTimeline && !oldValue { reloadTimeline() } }
+    }
+    private var timelineReader: TimelineReader?
+    private let timelineQueue = DispatchQueue(label: "drafter.timeline", qos: .userInitiated)
+    private var timelineTimer: Timer?
+
     static let syncInterval: TimeInterval = 5 * 60
 
     init(root: URL) {
@@ -51,6 +63,9 @@ final class DraftStore {
         git = Git.open(root)
         status = git == nil ? .unversioned : .idle(last: nil)
         drafts = []
+        timeline = []
+        timelineLoaded = false
+        timelineReader = TimelineReader(directory: directory, git: git)
         watcher = DirectoryWatcher(url: root) { [weak self] in self?.reload() }
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: Self.syncInterval, repeats: true) { [weak self] _ in
@@ -82,6 +97,29 @@ final class DraftStore {
                 guard generation == self.reloadGeneration, directory.root == self.directory.root else { return }
                 self.drafts = drafts
                 NotificationCenter.default.post(name: .draftsDidChange, object: self)
+                self.reloadTimeline()
+            }
+        }
+    }
+
+    /// Re-reads the timeline in the background, a moment after the last
+    /// change asked for it: saves come in runs.
+    func reloadTimeline() {
+        guard wantsTimeline, let reader = timelineReader else { return }
+        timelineTimer?.invalidate()
+        timelineTimer = Timer.scheduledTimer(withTimeInterval: timelineLoaded ? 0.6 : 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.timelineQueue.async {
+                    let changes = reader.read()
+                    DispatchQueue.main.async {
+                        guard let self, reader === self.timelineReader else { return }
+                        self.timelineLoaded = true
+                        if changes != self.timeline {
+                            self.timeline = changes
+                        }
+                        NotificationCenter.default.post(name: .timelineDidChange, object: self)
+                    }
+                }
             }
         }
     }
@@ -159,6 +197,7 @@ final class DraftStore {
             do {
                 try await git.commitAndPush()
                 if case .failed = status { status = .idle(last: Date()) }
+                reloadTimeline()
             } catch {
                 status = .failed(error.localizedDescription)
             }

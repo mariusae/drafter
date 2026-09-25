@@ -11,18 +11,21 @@ struct QuickCommand {
 
 /// ⌘K: one field that goes to any draft by its title, to any line of any
 /// draft by what is written on it, or runs any command. `>` narrows it to
-/// commands.
+/// commands, and `@` to the headings of the draft on screen.
 @MainActor
 final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSWindowDelegate {
     enum Result {
         case draft(Draft, ranges: [NSRange])
         case line(Draft, text: String, ranges: [NSRange], location: NSRange)
         case command(QuickCommand, ranges: [NSRange])
+        case heading(Int, MarkdownDocument.Heading, ranges: [NSRange])
     }
 
     private let store: DraftStore
     private let commands: () -> [QuickCommand]
     private let open: (Draft, NSRange?) -> Void
+    private let headings: () -> [MarkdownDocument.Heading]
+    private let goToHeading: (Int) -> Void
 
     private var panel: GoToPanel?
     private var field: NSTextField!
@@ -36,10 +39,14 @@ final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDa
     private static let maxVisibleRows = 9
     private static let fieldHeight: CGFloat = 56
 
-    init(store: DraftStore, commands: @escaping () -> [QuickCommand], open: @escaping (Draft, NSRange?) -> Void) {
+    init(store: DraftStore, commands: @escaping () -> [QuickCommand],
+         headings: @escaping () -> [MarkdownDocument.Heading],
+         open: @escaping (Draft, NSRange?) -> Void, goToHeading: @escaping (Int) -> Void) {
         self.store = store
         self.commands = commands
+        self.headings = headings
         self.open = open
+        self.goToHeading = goToHeading
     }
 
     var isVisible: Bool { panel?.isVisible ?? false }
@@ -109,7 +116,7 @@ final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDa
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: 22, weight: .regular)
-        field.placeholderString = "Go to draft, text, or > command"
+        field.placeholderString = "Go to draft, text, @ heading, or > command"
         field.delegate = self
         field.cell?.isScrollable = true
         field.cell?.wraps = false
@@ -193,6 +200,15 @@ final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDa
         let available = commands().filter { $0.isEnabled() }
         let drafts = store.drafts  // inbox first, each newest first
 
+        if query.hasPrefix("@") {
+            let rest = String(query.dropFirst()).trimmingCharacters(in: .whitespaces)
+            let matches = headings().enumerated().compactMap { index, heading in
+                Fuzzy.match(rest, in: heading.title).map { (index, heading, $0) }
+            }
+            // In document order while browsing, best first once searching.
+            let ordered = rest.isEmpty ? matches : matches.sorted { $0.2.score > $1.2.score }
+            return ordered.map { .heading($0.0, $0.1, ranges: $0.2.ranges) }
+        }
         if query.hasPrefix(">") {
             let rest = String(query.dropFirst()).trimmingCharacters(in: .whitespaces)
             return available.compactMap { command in
@@ -267,6 +283,7 @@ final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDa
         case .draft(let draft, _): open(draft, nil)
         case .line(let draft, _, _, let location): open(draft, location)
         case .command(let command, _): command.perform()
+        case .heading(let index, _, _): goToHeading(index)
         }
     }
 
@@ -310,6 +327,12 @@ final class GoToAnythingController: NSObject, NSTextFieldDelegate, NSTableViewDa
         case .command(let command, let ranges):
             cell.configure(symbol: command.symbol, title: command.title, highlights: ranges,
                            subtitle: "", accessory: command.shortcut)
+        case .heading(_, let heading, let ranges):
+            // Indented by level, as in the outline.
+            let indent = String(repeating: "    ", count: max(0, heading.level - 1))
+            let shifted = ranges.map { NSRange(location: $0.location + indent.utf16.count, length: $0.length) }
+            cell.configure(symbol: "number", title: indent + heading.title, highlights: shifted,
+                           subtitle: "", accessory: "H\(heading.level)")
         }
         return cell
     }

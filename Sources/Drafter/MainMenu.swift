@@ -68,24 +68,30 @@ enum MainMenu {
         main.addItem(submenu("View", [
             item("Inbox", #selector(MainWindowController.showInbox(_:)), "1"),
             item("Archive", #selector(MainWindowController.showArchive(_:)), "2"),
+            item("Timeline", #selector(MainWindowController.showTimeline(_:)), "3"),
             .separator(),
             item("Bigger", #selector(MainWindowController.makeTextBigger(_:)), "+"),
             item("Smaller", #selector(MainWindowController.makeTextSmaller(_:)), "-"),
             item("Actual Size", #selector(MainWindowController.makeTextStandardSize(_:)), "0"),
             .separator(),
             item("Toggle Sidebar", #selector(NSSplitViewController.toggleSidebar(_:)), "s", [.command, .control]),
+            item("Show Outline", #selector(MainWindowController.toggleOutline(_:)), "i", [.command, .option]),
             item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]),
         ]))
 
         main.addItem(submenu("Go", [
             item("Go to Anything…", #selector(MainWindowController.goToAnything(_:)), "k"),
             item("Run Command…", #selector(MainWindowController.runCommand(_:)), "k", [.command, .shift]),
+            item("Go to Heading…", #selector(MainWindowController.goToHeading(_:)), "o", [.command, .shift]),
             .separator(),
             item("Next Draft", #selector(MainWindowController.nextDraft(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .option]),
             item("Previous Draft", #selector(MainWindowController.previousDraft(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .option]),
+            item("Next Heading", #selector(MainWindowController.nextHeading(_:)), String(UnicodeScalar(NSDownArrowFunctionKey)!), [.command, .control]),
+            item("Previous Heading", #selector(MainWindowController.previousHeading(_:)), String(UnicodeScalar(NSUpArrowFunctionKey)!), [.command, .control]),
             .separator(),
             item("Draft List", #selector(MainWindowController.focusList(_:)), "l", [.command, .option]),
             item("Editor", #selector(MainWindowController.focusEditor(_:)), "e", [.command, .option]),
+            item("Outline", #selector(MainWindowController.focusOutline(_:)), "o", [.command, .option]),
         ]))
 
         main.addItem(submenu("Draft", [
