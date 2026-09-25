@@ -87,9 +87,17 @@ public final class TimelineReader: @unchecked Sendable {
     }
 
     /// Whether a file of the directory is one the timeline is about: a draft
-    /// of the inbox. What is archived is put away, history and all.
-    static func shows(_ name: String) -> Bool {
-        !name.contains("/") && name.hasSuffix(".md") && name != DraftsDirectory.readme && !name.hasPrefix(".")
+    /// of the inbox. What is archived is put away, history and all; and a
+    /// draft's notes are the thinking about it rather than the writing, so
+    /// they are left out wherever the draft they belong to is there, as the
+    /// listing leaves them out. Notes with no draft are a draft of their own.
+    func shows(_ name: String) -> Bool {
+        guard !name.contains("/"), name.hasSuffix(".md"), name != DraftsDirectory.readme, !name.hasPrefix(".") else {
+            return false
+        }
+        guard DraftsDirectory.isNotesName(name) else { return true }
+        let owner = directory.root.appendingPathComponent(DraftsDirectory.draftName(ofNotes: name))
+        return !FileManager.default.fileExists(atPath: owner.path)
     }
 
     // MARK: Unversioned
@@ -116,7 +124,7 @@ public final class TimelineReader: @unchecked Sendable {
     private func written(_ git: Git) -> [TimelineChange] {
         let (changed, added) = git.written()
         var changes: [TimelineChange] = []
-        for (name, whole) in added.map({ ($0, true) }) + changed.map({ ($0, false) }) where Self.shows(name) {
+        for (name, whole) in added.map({ ($0, true) }) + changed.map({ ($0, false) }) where shows(name) {
             let url = directory.root.appendingPathComponent(name)
             guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
             let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date()
@@ -147,13 +155,13 @@ public final class TimelineReader: @unchecked Sendable {
             if let cutoff, revisions[index].when < cutoff { break }
             let batch = Array(revisions[index..<min(index + 50, revisions.count)])
             let wanted = batch.flatMap { revision in
-                revision.files.filter { Self.shows($0.name) }.map { (revision.id, $0.path) }
+                revision.files.filter { shows($0.name) }.map { (revision.id, $0.path) }
             }
             let contents = git.contents(wanted)
             var next = 0
             for revision in batch {
                 if let cutoff, revision.when < cutoff { break }
-                for file in revision.files where Self.shows(file.name) {
+                for file in revision.files where shows(file.name) {
                     defer { next += 1 }
                     guard let content = contents[next],
                           let change = Self.change(name: file.name, content: content, hunks: file.hunks,

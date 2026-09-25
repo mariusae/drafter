@@ -23,7 +23,7 @@ section, a list item with its subtree, a nested item as its parent's line plus
 its own branch, a table whole); overlapping blocks and blocks one blank line
 apart are joined; and saves to nearby blocks of one draft within five minutes
 fold into one entry that shows the text as it stood after that burst.
-Uncommitted writing comes first. The archive is left out. Choosing an entry
+Uncommitted writing comes first. The archive is left out, and so are notes beside their draft. Choosing an entry
 opens the draft with the block flashed, and the keyboard stays in the
 timeline, so ↓ reads on.
 

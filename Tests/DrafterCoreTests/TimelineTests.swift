@@ -88,18 +88,22 @@ final class TimelineTests: XCTestCase {
         try FileManager.default.createDirectory(at: repo.appendingPathComponent("archive"), withIntermediateDirectories: true)
         try commit("archive/old.md", "# Old\n", at: day + 180)
 
+        // Notes are left out beside their draft, and kept when orphaned.
+        try commit("airport-notes.md", "# Notes on Airport\n\nthinking\n", at: day + 200)
+        try commit("gone-notes.md", "# Notes on Gone\n\norphaned\n", at: day + 300)
+
         let reader = TimelineReader(directory: DraftsDirectory(root: repo), git: Git.open(repo))
         let changes = reader.read()
-        XCTAssertEqual(changes.map(\.name), ["other.md", "airport.md", "airport.md"])
+        XCTAssertEqual(changes.map(\.name), ["gone-notes.md", "other.md", "airport.md", "airport.md"])
 
-        let burst = changes[1]
+        let burst = changes[2]
         XCTAssertEqual(burst.blocks.map(\.text), ["The third paragraph, edited twice."])
         XCTAssertEqual(burst.blocks.first?.line, 7)
         XCTAssertEqual(burst.since, Date(timeIntervalSince1970: TimeInterval(day)))
         XCTAssertEqual(burst.when, Date(timeIntervalSince1970: TimeInterval(day + 60)))
 
         // The first commit shows the draft whole, its neighbouring blocks joined.
-        XCTAssertEqual(changes[2].blocks.map(\.text), [first.trimmingCharacters(in: .whitespacesAndNewlines)])
+        XCTAssertEqual(changes[3].blocks.map(\.text), [first.trimmingCharacters(in: .whitespacesAndNewlines)])
 
         // Written but not committed comes first.
         try Data("# Other\n\nhello, again\n".utf8).write(to: repo.appendingPathComponent("other.md"))
