@@ -35,6 +35,7 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
     private var statusTimer: Timer?
     private var emptyField: NSTextField!
     private var suppressSelection = false
+    private var pendingChangeID: String?
 
     init(store: DraftStore) {
         self.store = store
@@ -182,8 +183,9 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
     }
 
     /// Shows the timeline. The draft on screen stays where it is until an
-    /// entry is chosen.
-    func showTimeline() {
+    /// entry is chosen; an entry named is selected, once history is read.
+    func showTimeline(selecting id: String? = nil) {
+        pendingChangeID = id
         guard setMode(.timeline) else { return }
         reloadChanges(keeping: nil)
     }
@@ -222,8 +224,11 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
             changes = fresh
             tableView.reloadData()
         }
-        if let id, let index = changes.firstIndex(where: { $0.id == id }) {
+        let wanted = id ?? pendingChangeID
+        if store.timelineLoaded { pendingChangeID = nil }
+        if let wanted, let index = changes.firstIndex(where: { $0.id == wanted }) {
             tableView.selectRowIndexes([index], byExtendingSelection: false)
+            tableView.scrollRowToVisible(index)
         }
         updateEmpty()
     }

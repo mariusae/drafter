@@ -34,6 +34,15 @@ you are in as you type or scroll, and takes you there on a click or as you
 arrow through it. ⇧⌘O (or `@` in ⌘K) finds a heading by name; ⌃⌘↓ and ⌃⌘↑
 step through them.
 
+## Picking up where you left off
+
+Every draft remembers its cursor, selection and scroll, across switching
+drafts and across launches; archiving or renaming a draft takes its place
+along. Quitting and reopening also brings back the list you were in (and the
+timeline entry), the open draft, which pane had the keyboard, the window, the
+columns and the type size. This is kept in
+`~/Library/Application Support/Drafter/State.json`.
+
 The directory is `$DRAFTS_DIR`, else `~/drafts`, or whatever ⌘, chooses.
 
 ## Keys

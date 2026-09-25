@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidResignActive(_ notification: Notification) {
         windowController.editor.saveNow()
+        windowController.recordState()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -38,6 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// draft written just before quitting is not left only on this disk.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         windowController.editor.saveNow()
+        windowController.recordState()
         guard let git = store.git else { return .terminateNow }
         // Off the main actor, and answered through the run loop: while
         // terminate: waits, the main queue may be blocked beneath it, but its
@@ -69,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard response == .OK, let url = panel.url else { return }
             self.windowController.editor.saveNow()
             UserDefaults.standard.set(url.path, forKey: Self.directoryKey)
-            UserDefaults.standard.removeObject(forKey: MainWindowController.lastDraftKey)
+            SessionState.shared.openDraft = nil
             self.windowController.editor.show(nil)
             self.store.open(url)
         }

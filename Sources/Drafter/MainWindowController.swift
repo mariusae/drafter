@@ -21,8 +21,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var outlineItem: NSSplitViewItem!
     private var goTo: GoToAnythingController!
     private var restored = false
-
-    static let lastDraftKey = "LastDraftPath"
+    private let session = SessionState.shared
 
     init(store: DraftStore) {
         self.store = store
@@ -75,8 +74,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         list.actionTarget = self
         list.onSelect = { [weak self] url in self?.listSelected(url) }
         list.onReturn = { [weak self] in self?.editor.focus() }
-        list.onModeChange = { [weak self] _ in self?.updateTitle() }
-        list.onSelectChange = { [weak self] change in self?.open(change) }
+        list.onModeChange = { [weak self] mode in
+            guard let self else { return }
+            if restored {
+                session.listMode = mode
+                if mode != .timeline { session.timelineEntry = nil }
+            }
+            updateTitle()
+        }
+        list.onSelectChange = { [weak self] change in
+            self?.session.timelineEntry = change.id
+            self?.open(change)
+        }
         editor.onEscape = { [weak self] in self?.list.focus() }
         editor.onFiled = { [weak self] url in self?.list.select(url); self?.remember(url) }
         editor.onTitleChange = { [weak self] in self?.updateTitle() }
@@ -123,25 +132,57 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     private func remember(_ url: URL) {
-        UserDefaults.standard.set(url.path, forKey: Self.lastDraftKey)
+        guard restored else { return }
+        session.openDraft = url
     }
 
-    /// The first reading of the directory reopens the draft last worked on.
+    /// The first reading of the directory puts everything back as it was
+    /// left: the list, the draft (whose own cursor and scroll the editor puts
+    /// back), the timeline entry, and the pane that had the keyboard.
     @objc private func draftsDidChange() {
         guard !restored else {
             updateTitle()
             return
         }
+        let open = session.openDraft.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+        let mode = session.listMode
+        if let folder = mode.folder {
+            if let open, let draft = store.draft(at: open), draft.folder == folder {
+                list.show(folder: folder, select: draft.url)
+            } else {
+                list.show(folder: folder, select: nil)
+                if open == nil, let first = store.drafts(in: folder).first {
+                    list.select(first.url)
+                    editor.show(first.url)
+                }
+            }
+        } else {
+            list.showTimeline(selecting: session.timelineEntry)
+        }
+        if let open { editor.show(open) }
         restored = true
-        if let path = UserDefaults.standard.string(forKey: Self.lastDraftKey),
-           let draft = store.draft(at: URL(fileURLWithPath: path)) {
-            list.show(folder: draft.folder, select: draft.url)
-            editor.show(draft.url)
-        } else if let first = store.drafts(in: .inbox).first {
-            list.show(folder: .inbox, select: first.url)
-            editor.show(first.url)
+        if let url = editor.url { session.openDraft = url }
+        switch session.focus {
+        case .list: list.focusKeepingSelection()
+        case .outline where !outlineItem.isCollapsed: outline.focus()
+        default: editor.focus()
         }
         updateTitle()
+    }
+
+    /// Notes which pane has the keyboard, and where the cursor is, for the
+    /// next launch.
+    func recordState() {
+        editor.recordPosition()
+        let responder = window?.firstResponder as? NSView
+        if responder === editor.textView {
+            session.focus = .editor
+        } else if let responder, responder.isDescendant(of: outline.view) {
+            session.focus = .outline
+        } else if let responder, responder.isDescendant(of: list.view) {
+            session.focus = .list
+        }
+        session.saveNow()
     }
 
     /// Opens a timeline entry: the draft, at the blocks that moved. The

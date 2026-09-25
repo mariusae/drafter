@@ -9,6 +9,12 @@ enum Snapshot {
         guard let dir = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT"] else { return }
         let url = URL(fileURLWithPath: dir, isDirectory: true)
         let env = ProcessInfo.processInfo.environment
+        if let location = env["DRAFTER_SNAPSHOT_CURSOR"].flatMap(Int.init) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                controller.editor.reveal(NSRange(location: location, length: 5), atTop: true, flash: false)
+                controller.editor.textView.setSelectedRange(NSRange(location: location, length: 5))
+            }
+        }
         if let heading = env["DRAFTER_SNAPSHOT_HEADING"].flatMap(Int.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { controller.editor.goToHeading(heading) }
         }

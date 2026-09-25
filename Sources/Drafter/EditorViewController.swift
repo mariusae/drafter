@@ -44,6 +44,10 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     private(set) var headings: [MarkdownDocument.Heading] = []
     private(set) var currentHeading: Int?
     private var outlineTimer: Timer?
+    private var positionTimer: Timer?
+    /// Set while a draft is being put on screen, when the cursor and scroll
+    /// move for reasons that are not the writer's.
+    private var restoring = false
 
     private var scrollView: NSScrollView!
     private(set) var textView: DraftTextView!
@@ -135,22 +139,25 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     // MARK: Showing
 
     /// Shows a draft, saving whatever was on screen first.
+    /// Otherwise it opens where it was left: the same cursor, the same scroll.
     func show(_ url: URL?, selecting range: NSRange? = nil) {
         if url?.standardizedFileURL == self.url, url != nil {
             if let range { select(range) }
             return
         }
         saveNow()
+        recordPosition()
         self.url = url?.standardizedFileURL
         isNew = false
         let text = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
         load(text)
-        if let range { select(range) }
+        if let range { select(range) } else { restorePosition() }
     }
 
     /// Begins a draft that is not yet a file.
     func beginNew() {
         saveNow()
+        recordPosition()
         url = nil
         isNew = true
         load("")
@@ -158,6 +165,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     }
 
     private func load(_ text: String) {
+        restoring = true
+        defer { restoring = false }
         savedText = text
         textView.string = text
         if let storage = textView.textStorage { styler.styleAll(storage) }
@@ -205,10 +214,84 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     func textViewDidChangeSelection(_ notification: Notification) {
         updateCurrentHeading()
+        schedulePositionRecord()
     }
 
     @objc private func didScroll() {
         updateCurrentHeading()
+        schedulePositionRecord()
+    }
+
+    // MARK: Where the writer was
+
+    private func schedulePositionRecord() {
+        guard !restoring, url != nil else { return }
+        positionTimer?.invalidate()
+        positionTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.recordPosition() }
+        }
+    }
+
+    /// Notes the cursor and scroll of the draft on screen.
+    func recordPosition() {
+        positionTimer?.invalidate()
+        positionTimer = nil
+        guard !restoring, let url, textView != nil else { return }
+        let selection = textView.selectedRange()
+        let clip = scrollView.contentView.bounds
+        SessionState.shared.setPosition(.init(
+            selection: selection.location, selectionLength: selection.length,
+            scrollY: clip.origin.y, width: clip.width, fontSize: styler.fontSize,
+            topCharacter: topVisibleCharacter(), used: Date()), for: url)
+    }
+
+    /// Puts the cursor and scroll back where they were left. The scroll
+    /// offset is trusted only while the page is laid out as it was then;
+    /// otherwise the line that was at the top is brought back to the top.
+    private func restorePosition() {
+        guard let url, let position = SessionState.shared.position(for: url) else { return }
+        restoring = true
+        defer { restoring = false }
+        let length = (textView.string as NSString).length
+        let location = min(position.selection, length)
+        textView.setSelectedRange(NSRange(location: location, length: min(position.selectionLength, length - location)))
+        // Lay the whole draft out, so an offset far down means what it meant.
+        if let layout = textView.textLayoutManager {
+            layout.ensureLayout(for: layout.documentRange)
+        }
+        let clip = scrollView.contentView.bounds
+        if abs(clip.width - position.width) < 1, position.fontSize == styler.fontSize {
+            scroll(toY: position.scrollY)
+        } else {
+            scrollToTop(of: NSRange(location: min(position.topCharacter, length), length: 0), margin: 0)
+        }
+        updateCurrentHeading(force: true)
+    }
+
+    private func scroll(toY y: CGFloat) {
+        let inset = scrollView.contentView.contentInsets.top
+        let limit = max(-inset, textView.frame.height - scrollView.contentView.bounds.height)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: min(max(-inset, y), limit)))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    /// Scrolls a range to the top of what can be read, below the toolbar.
+    private func scrollToTop(of range: NSRange, margin: CGFloat) {
+        guard let window = textView.window else { return }
+        let screen = textView.firstRect(forCharacterRange: range, actualRange: nil)
+        let local = textView.convert(window.convertFromScreen(screen), from: nil)
+        scroll(toY: local.minY - margin - scrollView.contentView.contentInsets.top)
+    }
+
+    /// The first character that can be read. The page scrolls under the
+    /// toolbar, so that is below the content inset, not at the top of the
+    /// visible rect; and a point in the page's margin is in no line and is
+    /// answered with the end of the text, so the point is kept in the text.
+    private func topVisibleCharacter() -> Int {
+        let visible = textView.visibleRect
+        let inset = scrollView.contentView.contentInsets.top
+        return textView.characterIndexForInsertion(
+            at: NSPoint(x: visible.midX, y: max(visible.minY + inset, textView.textContainerInset.height) + 1))
     }
 
     // MARK: Outline
@@ -233,14 +316,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             }
             return
         }
-        // The page scrolls under the toolbar: what can be read begins below
-        // the content inset, not at the top of the visible rect.
         let visible = textView.visibleRect
-        let inset = scrollView.contentView.contentInsets.top
-        // A point in the page's margin is in no line, and is answered with the
-        // end of the text; so the point is kept within the text.
-        let top = textView.characterIndexForInsertion(
-            at: NSPoint(x: visible.midX, y: max(visible.minY + inset, textView.textContainerInset.height) + 1))
+        let top = topVisibleCharacter()
         let bottom = textView.characterIndexForInsertion(at: NSPoint(x: visible.midX, y: visible.maxY - 1))
         let cursor = textView.selectedRange().location
         let anchor = (top...max(top, bottom)).contains(cursor) ? cursor : top
@@ -275,15 +352,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         let range = NSRange(location: range.location, length: min(range.length, length - range.location))
         textView.setSelectedRange(NSRange(location: range.location, length: 0))
         textView.scrollRangeToVisible(range)
-        if atTop, let window = textView.window {
-            let screen = textView.firstRect(forCharacterRange: range, actualRange: nil)
-            let local = textView.convert(window.convertFromScreen(screen), from: nil)
-            let inset = scrollView.contentView.contentInsets.top
-            let limit = max(-inset, textView.frame.height - scrollView.contentView.bounds.height)
-            let y = min(max(-inset, local.minY - 28 - inset), limit)
-            scrollView.contentView.scroll(to: NSPoint(x: 0, y: y))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-        }
+        if atTop { scrollToTop(of: range, margin: 28) }
         if flash, range.length > 0 { textView.showFindIndicator(for: range) }
         view.window?.makeFirstResponder(textView)
         updateCurrentHeading(force: true)

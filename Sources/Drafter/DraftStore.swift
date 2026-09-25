@@ -141,9 +141,9 @@ final class DraftStore {
         return url
     }
 
-    func archive(_ url: URL) throws -> URL { try moved { try directory.archive(url) } }
-    func unarchive(_ url: URL) throws -> URL { try moved { try directory.unarchive(url) } }
-    func rename(_ url: URL) throws -> URL { try moved { try directory.rename(url) } }
+    func archive(_ url: URL) throws -> URL { try moved(url) { try directory.archive(url) } }
+    func unarchive(_ url: URL) throws -> URL { try moved(url) { try directory.unarchive(url) } }
+    func rename(_ url: URL) throws -> URL { try moved(url) { try directory.rename(url) } }
 
     /// Creates the notes file beside a draft if it is not there yet.
     func notes(for draft: Draft) throws -> URL {
@@ -156,9 +156,10 @@ final class DraftStore {
         return notes
     }
 
-    private func moved(_ move: () throws -> URL) throws -> URL {
+    private func moved(_ from: URL, _ move: () throws -> URL) throws -> URL {
         flushPendingEdits?()
         let url = try move()
+        SessionState.shared.move(from: from, to: url)
         reload()
         commitAndPush()
         return url
