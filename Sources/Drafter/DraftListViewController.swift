@@ -326,6 +326,8 @@ final class DraftListViewController: NSViewController, NSTableViewDataSource, NS
         add("Open Notes", #selector(MainWindowController.openNotes(_:)))
         menu.addItem(.separator())
         add("Show in Finder", #selector(MainWindowController.revealInFinder(_:)))
+        add("Copy Link", #selector(MainWindowController.copyLink(_:)))
+        add("Copy Contents", #selector(MainWindowController.copyContents(_:)))
         add("Copy Path", #selector(MainWindowController.copyPath(_:)))
     }
 

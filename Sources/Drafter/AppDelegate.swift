@@ -19,6 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Snapshot.scheduleIfRequested(windowController)
     }
 
+    /// drafter://draft/<name> links, from anywhere.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme?.lowercased() == DraftLink.scheme {
+            windowController?.openLink(url)
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

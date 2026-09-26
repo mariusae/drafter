@@ -24,6 +24,8 @@ fi
 cp build/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 codesign --force --sign - "$app" >/dev/null 2>&1
+# Tell Launch Services about the app, so drafter:// links reach it.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
 echo "built $app"
 
 if [ "$1" = run ]; then

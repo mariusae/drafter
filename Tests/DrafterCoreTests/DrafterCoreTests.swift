@@ -134,3 +134,23 @@ final class GitTests: XCTestCase {
         XCTAssertEqual(try sh("git status --porcelain", in: b), "")
     }
 }
+
+final class DraftLinkTests: XCTestCase {
+    func testLinks() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = DraftsDirectory(root: root)
+        let url = try dir.create(text: "# Café au lait")
+        let link = DraftLink.url(for: url)
+        XCTAssertEqual(link.absoluteString, "drafter://draft/caf%C3%A9-au-lait")
+        XCTAssertEqual(DraftLink.resolve(link, in: dir), url)
+
+        // Archived, the same link still finds it.
+        let archived = try dir.archive(url)
+        XCTAssertEqual(DraftLink.resolve(link, in: dir), archived)
+
+        XCTAssertNil(DraftLink.resolve(URL(string: "drafter://draft/nothing")!, in: dir))
+        XCTAssertNil(DraftLink.resolve(URL(string: "drafter://draft/..%2Fetc")!, in: dir))
+        XCTAssertNil(DraftLink.resolve(URL(string: "https://draft/caf%C3%A9-au-lait")!, in: dir))
+    }
+}

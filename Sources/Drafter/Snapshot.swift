@@ -9,6 +9,16 @@ enum Snapshot {
         guard let dir = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT"] else { return }
         let url = URL(fileURLWithPath: dir, isDirectory: true)
         let env = ProcessInfo.processInfo.environment
+        // A link as Launch Services would deliver it: one at launch, before
+        // the directory is read, and one once the app is up.
+        if let link = env["DRAFTER_SNAPSHOT_LINK"].flatMap(URL.init(string:)) {
+            (NSApp.delegate as? AppDelegate)?.application(NSApp, open: [link])
+        }
+        if let link = env["DRAFTER_SNAPSHOT_LATE_LINK"].flatMap(URL.init(string:)) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                (NSApp.delegate as? AppDelegate)?.application(NSApp, open: [link])
+            }
+        }
         if let location = env["DRAFTER_SNAPSHOT_CURSOR"].flatMap(Int.init) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 controller.editor.reveal(NSRange(location: location, length: 5), atTop: true, flash: false)
@@ -30,7 +40,8 @@ enum Snapshot {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { controller.showTimeline(nil) }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { controller.nextDraftOrEntry() }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+        let delay = env["DRAFTER_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 2.5
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
             if let query = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT_QUERY"] {
                 controller.goToAnything(query: query)
             }

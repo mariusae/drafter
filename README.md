@@ -43,6 +43,18 @@ and takes you there, and ⌘J from inside the notes puts it away again. A
 draft whose notes you dismissed keeps them dismissed until you ask. Notes
 move with their draft when it is archived or renamed.
 
+## Links
+
+Every draft has a link, `drafter://draft/<name>` — its filename without
+`.md` — which opens it in Drafter from anywhere: a note, a chat, a browser, a
+shell (`open drafter://draft/agent-ir`). A link is looked up in the inbox and
+then the archive, so archiving a draft does not break links to it; renaming
+it does. Copy Link (⇧⌘C, or a row's menu) puts the link on the clipboard, as
+a titled link for apps that paste rich text.
+
+Copy Contents (the toolbar's copy button, or ⌥⇧⌘C) puts the whole draft on
+the clipboard as plain Markdown, including what has not been saved yet.
+
 ## Picking up where you left off
 
 Every draft remembers its cursor, selection and scroll, across switching
@@ -62,6 +74,7 @@ The directory is `$DRAFTS_DIR`, else `~/drafts`, or whatever ⌘, chooses.
 | ⇧⌘K | Run command |
 | ⌘N | New draft |
 | ⌘J | Show notes and go to them; from the notes, hide them |
+| ⇧⌘C / ⌥⇧⌘C | Copy link to draft / copy draft contents |
 | ⌘1 / ⌘2 / ⌘3 | Inbox / Archive / Timeline |
 | ⇧⌘O, ⌃⌘↓ / ⌃⌘↑ | Go to heading, next / previous heading |
 | ⌥⌘I, ⌥⌘O | Show outline, move into it |

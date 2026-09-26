@@ -7,6 +7,7 @@ extension NSToolbarItem.Identifier {
     static let archive = Self("Archive")
     static let goToAnything = Self("GoToAnything")
     static let outline = Self("Outline")
+    static let copyContents = Self("CopyContents")
 }
 
 /// The one window: drafts on the left, the draft on the right.
@@ -25,6 +26,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var notesItem: NSSplitViewItem!
     private var goTo: GoToAnythingController!
     private var restored = false
+    /// A link that arrived before the directory was read, to follow once it is.
+    private var pendingLink: URL?
     private let session = SessionState.shared
 
     init(store: DraftStore) {
@@ -192,6 +195,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if let open { editor.show(open) }
         restored = true
         if let url = editor.url { session.openDraft = url }
+        if let link = pendingLink {
+            pendingLink = nil
+            openLink(link)
+            updateTitle()
+            return
+        }
         updateNotes()
         switch session.focus {
         case .list: list.focusKeepingSelection()
@@ -314,6 +323,66 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             list.select(moved)
         } catch {
             presentError(error)
+        }
+    }
+
+    // MARK: Links and copying
+
+    /// Follows a drafter:// link to its draft, wherever it is filed.
+    func openLink(_ link: URL) {
+        guard restored else {
+            pendingLink = link  // launched by the link: follow it once there is a directory
+            return
+        }
+        showWindow(nil)
+        NSApp.activate()
+        guard let url = DraftLink.resolve(link, in: store.directory) else {
+            let alert = NSAlert()
+            alert.messageText = "No Such Draft"
+            let name = link.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            alert.informativeText = "There is no draft called “\(name)” in \(store.directory.root.path), or in its archive."
+            if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+            return
+        }
+        open(url)
+    }
+
+    /// A link to the draft: its drafter:// URL as text, and as a link titled
+    /// with the draft's title for anything that pastes rich text.
+    @objc func copyLink(_ sender: Any?) {
+        guard let url = target(sender) else { return }
+        let link = DraftLink.url(for: url).absoluteString
+        let title = store.draft(at: url)?.title ?? editor.currentTitle
+        let escaped = title.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
+        let item = NSPasteboardItem()
+        item.setString(link, forType: .string)
+        item.setString(link, forType: .URL)
+        item.setString("<a href=\"\(link)\">\(escaped)</a>", forType: .html)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.writeObjects([item])
+        acknowledge(.copyContents, symbol: "link")
+    }
+
+    /// The whole draft, as plain text: what is on screen for the draft on
+    /// screen, saved or not; what is on disk for any other.
+    @objc func copyContents(_ sender: Any?) {
+        guard let url = target(sender) else { return }
+        let text = url.standardizedFileURL == editor.url
+            ? editor.textView.string
+            : (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        acknowledge(.copyContents, symbol: "checkmark")
+    }
+
+    /// Says a copy happened, the way a toolbar can: the button shows it for
+    /// a moment.
+    private func acknowledge(_ id: NSToolbarItem.Identifier, symbol: String) {
+        guard let item = window?.toolbar?.items.first(where: { $0.itemIdentifier == id }) else { return }
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Copied")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            item.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy Contents")
         }
     }
 
@@ -494,6 +563,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             QuickCommand(title: "Sync Now", symbol: "arrow.triangle.2.circlepath", shortcut: "⌘R") { [weak self] in self?.syncNow(nil) },
             QuickCommand(title: "Show in Finder", symbol: "folder") { [weak self] in self?.revealInFinder(nil) },
             QuickCommand(title: "Copy Path", symbol: "doc.on.clipboard", isEnabled: hasDraft) { [weak self] in self?.copyPath(nil) },
+            QuickCommand(title: "Copy Link to Draft", symbol: "link", shortcut: "⇧⌘C", isEnabled: hasDraft) { [weak self] in self?.copyLink(nil) },
+            QuickCommand(title: "Copy Draft Contents", symbol: "doc.on.doc", shortcut: "⌥⇧⌘C", isEnabled: hasDraft) { [weak self] in self?.copyContents(nil) },
             QuickCommand(title: "Toggle Sidebar", symbol: "sidebar.left", shortcut: "⌃⌘S") { [weak self] in self?.split.toggleSidebar(nil) },
             QuickCommand(title: "Choose Drafts Folder…", symbol: "folder.badge.gearshape") {
                 (NSApp.delegate as? AppDelegate)?.chooseDraftsFolder(nil)
@@ -526,7 +597,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let folder = url.flatMap { store.directory.folder(of: $0) }
             title(folder == .archive ? "Move to Inbox" : "Archive")
             return url != nil && store.draft(at: url!) != nil
-        case #selector(renameToTitle(_:)), #selector(copyPath(_:)):
+        case #selector(renameToTitle(_:)), #selector(copyPath(_:)), #selector(copyLink(_:)), #selector(copyContents(_:)):
             return editor.url != nil
         case #selector(openNotes(_:)):
             return true
@@ -551,12 +622,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .flexibleSpace, .sync, .newDraft, .sidebarTrackingSeparator,
-         .flexibleSpace, .archive, .goToAnything, .inspectorTrackingSeparator, .flexibleSpace, .outline]
+         .flexibleSpace, .copyContents, .archive, .goToAnything, .inspectorTrackingSeparator, .flexibleSpace, .outline]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [.toggleSidebar, .sidebarTrackingSeparator, .inspectorTrackingSeparator, .flexibleSpace, .space,
-         .newDraft, .sync, .archive, .goToAnything, .outline]
+         .newDraft, .sync, .copyContents, .archive, .goToAnything, .outline]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
@@ -578,6 +649,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case .archive: return item("Archive", "archivebox", #selector(toggleArchive(_:)))
         case .goToAnything: return item("Go to Anything", "magnifyingglass", #selector(goToAnything(_:)))
         case .outline: return item("Outline", "sidebar.right", #selector(toggleOutline(_:)))
+        case .copyContents: return item("Copy Contents", "doc.on.doc", #selector(copyContents(_:)))
         default: return nil
         }
     }

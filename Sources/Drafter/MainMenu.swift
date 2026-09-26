@@ -30,6 +30,8 @@ enum MainMenu {
             item("Rename to Match Title", #selector(MainWindowController.renameToTitle(_:))),
             .separator(),
             item("Show in Finder", #selector(MainWindowController.revealInFinder(_:)), "r", [.command, .shift]),
+            item("Copy Link to Draft", #selector(MainWindowController.copyLink(_:)), "c", [.command, .shift]),
+            item("Copy Draft Contents", #selector(MainWindowController.copyContents(_:)), "c", [.command, .option, .shift]),
             item("Copy Path", #selector(MainWindowController.copyPath(_:)), "c", [.command, .option]),
             .separator(),
             item("Close Window", #selector(NSWindow.performClose(_:)), "w"),
