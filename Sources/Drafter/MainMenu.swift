@@ -82,7 +82,7 @@ enum MainMenu {
         ]))
 
         main.addItem(submenu("Go", [
-            item("Go to Anything…", #selector(MainWindowController.goToAnything(_:)), "k"),
+            item("Go to Anything…", #selector(MainWindowController.goToAnything(_:)), "o"),
             item("Run Command…", #selector(MainWindowController.runCommand(_:)), "k", [.command, .shift]),
             item("Go to Heading…", #selector(MainWindowController.goToHeading(_:)), "o", [.command, .shift]),
             .separator(),

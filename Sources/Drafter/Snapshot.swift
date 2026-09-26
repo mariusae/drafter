@@ -2,7 +2,7 @@ import AppKit
 
 /// For looking at the app without screen-recording permission: with
 /// DRAFTER_SNAPSHOT=<dir> set, the app draws its windows into PNGs there a
-/// moment after launch, then again with ⌘K open, and quits.
+/// moment after launch, then again with ⌘O open, and quits.
 @MainActor
 enum Snapshot {
     static func scheduleIfRequested(_ controller: MainWindowController) {

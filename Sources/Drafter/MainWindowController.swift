@@ -541,7 +541,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func makeTextSmaller(_ sender: Any?) { focusedEditor.makeTextSmaller(sender) }
     @objc func makeTextStandardSize(_ sender: Any?) { focusedEditor.makeTextStandardSize(sender) }
 
-    // MARK: Commands for ⌘K
+    // MARK: Commands for ⌘O
 
     private func commands() -> [QuickCommand] {
         let hasDraft: () -> Bool = { [weak self] in self?.editor.url != nil }

@@ -9,7 +9,7 @@ struct QuickCommand {
     var perform: () -> Void
 }
 
-/// ⌘K: one field that goes to any draft by its title, to any line of any
+/// ⌘O: one field that goes to any draft by its title, to any line of any
 /// draft by what is written on it, or runs any command. `>` narrows it to
 /// commands, and `@` to the headings of the draft on screen.
 @MainActor

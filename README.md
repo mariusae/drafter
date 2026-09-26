@@ -31,7 +31,7 @@ timeline, so ↓ reads on.
 
 The inspector (⌥⌘I) shows the draft's headings as a tree, marks the section
 you are in as you type or scroll, and takes you there on a click or as you
-arrow through it. ⇧⌘O (or `@` in ⌘K) finds a heading by name; ⌃⌘↓ and ⌃⌘↑
+arrow through it. ⇧⌘O (or `@` in ⌘O) finds a heading by name; ⌃⌘↓ and ⌃⌘↑
 step through them.
 
 ## Notes
@@ -70,7 +70,7 @@ The directory is `$DRAFTS_DIR`, else `~/drafts`, or whatever ⌘, chooses.
 
 | | |
 |---|---|
-| ⌘K | Go to anything: drafts by title, lines by text, `@` headings, `>` commands |
+| ⌘O | Go to anything: drafts by title, lines by text, `@` headings, `>` commands |
 | ⇧⌘K | Run command |
 | ⌘N | New draft |
 | ⌘J | Show notes and go to them; from the notes, hide them |
