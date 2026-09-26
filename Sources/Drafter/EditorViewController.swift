@@ -71,6 +71,14 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// Set while a draft is being put on screen, when the cursor and scroll
     /// move for reasons that are not the writer's.
     private var restoring = false
+    /// A place to return to, held while the editor is out of sight: a
+    /// collapsed pane has no size to scroll in.
+    private var pendingRestore = false
+
+    /// Whether the editor is on screen with room to lay text out in.
+    private var isVisible: Bool {
+        !view.isHiddenOrHasHiddenAncestor && scrollView.contentView.bounds.width > 1 && scrollView.contentView.bounds.height > 1
+    }
 
     private var scrollView: NSScrollView!
     private(set) var textView: DraftTextView!
@@ -171,6 +179,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
         }
         saveNow()
         recordPosition()
+        pendingRestore = false
         self.url = url?.standardizedFileURL
         isNew = false
         let text = url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
@@ -238,9 +247,11 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
             MainActor.assumeIsolated { self?.saveNow() }
         }
         onTitleChange?()
-        outlineTimer?.invalidate()
-        outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshHeadings() }
+        if role == .draft {
+            outlineTimer?.invalidate()
+            outlineTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshHeadings() }
+            }
         }
     }
 
@@ -257,7 +268,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     // MARK: Where the writer was
 
     private func schedulePositionRecord() {
-        guard !restoring, url != nil else { return }
+        guard !restoring, url != nil, isVisible else { return }
         positionTimer?.invalidate()
         positionTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.recordPosition() }
@@ -268,7 +279,7 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     func recordPosition() {
         positionTimer?.invalidate()
         positionTimer = nil
-        guard !restoring, let url, textView != nil else { return }
+        guard !restoring, let url, textView != nil, isVisible, !pendingRestore else { return }
         let selection = textView.selectedRange()
         let clip = scrollView.contentView.bounds
         SessionState.shared.setPosition(.init(
@@ -282,22 +293,54 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// otherwise the line that was at the top is brought back to the top.
     private func restorePosition() {
         guard let url, let position = SessionState.shared.position(for: url) else { return }
+        guard isVisible else {
+            pendingRestore = true
+            return
+        }
+        pendingRestore = false
         restoring = true
         defer { restoring = false }
         let length = (textView.string as NSString).length
         let location = min(position.selection, length)
         textView.setSelectedRange(NSRange(location: location, length: min(position.selectionLength, length - location)))
-        // Lay the whole draft out, so an offset far down means what it meant.
-        if let layout = textView.textLayoutManager {
-            layout.ensureLayout(for: layout.documentRange)
-        }
         let clip = scrollView.contentView.bounds
+        let atTop = position.scrollY <= -scrollView.contentView.contentInsets.top + 1
+        // Lay the draft out as far as the place being returned to, so an
+        // offset far down means what it meant; at the top, nothing need be.
+        if !atTop, let layout = textView.textLayoutManager,
+           let end = layout.location(layout.documentRange.location,
+                                     offsetBy: min(length, max(position.topCharacter, position.selection) + 4000)),
+           let range = NSTextRange(location: layout.documentRange.location, end: end) {
+            layout.ensureLayout(for: range)
+            // The view grows to what is laid out only later; a scroll now
+            // would be held to its old height. So it is grown now.
+            let needed = layout.usageBoundsForTextContainer.maxY + 2 * textView.textContainerInset.height
+            if textView.frame.height < needed {
+                textView.setFrameSize(NSSize(width: textView.frame.width, height: needed))
+            }
+        }
         if abs(clip.width - position.width) < 1, position.fontSize == styler.fontSize {
             scroll(toY: position.scrollY)
         } else {
             scrollToTop(of: NSRange(location: min(position.topCharacter, length), length: 0), margin: 0)
         }
         updateCurrentHeading(force: true)
+    }
+
+    /// However the editor came on screen — a pane opened, a window laid out
+    /// — the first layout with room in it returns to the place held.
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        if pendingRestore, isVisible {
+            DispatchQueue.main.async { [weak self] in self?.restorePositionIfPending() }
+        }
+    }
+
+    /// Returns to the place held while out of sight, now there is room.
+    func restorePositionIfPending() {
+        guard pendingRestore, isVisible else { return }
+        view.layoutSubtreeIfNeeded()
+        restorePosition()
     }
 
     private func scroll(toY y: CGFloat) {
@@ -309,10 +352,29 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
 
     /// Scrolls a range to the top of what can be read, below the toolbar.
     private func scrollToTop(of range: NSRange, margin: CGFloat) {
-        guard let window = textView.window else { return }
-        let screen = textView.firstRect(forCharacterRange: range, actualRange: nil)
-        let local = textView.convert(window.convertFromScreen(screen), from: nil)
-        scroll(toY: local.minY - margin - scrollView.contentView.contentInsets.top)
+        guard let line = lineRect(at: range.location) else { return }
+        scroll(toY: line.minY - margin - scrollView.contentView.contentInsets.top)
+    }
+
+    /// Where the line holding a character sits in the text view, asked of
+    /// the layout itself. (The text input system's firstRect answers with
+    /// nothing for a view that has only just come on screen.)
+    private func lineRect(at index: Int) -> NSRect? {
+        guard let layout = textView.textLayoutManager,
+              let location = layout.location(layout.documentRange.location, offsetBy: index) else { return nil }
+        layout.ensureLayout(for: NSTextRange(location: location))
+        guard let fragment = layout.textLayoutFragment(for: location) else { return nil }
+        var rect = fragment.layoutFragmentFrame
+        let offset = layout.offset(from: fragment.rangeInElement.location, to: location)
+        if let line = fragment.textLineFragments.first(where: {
+            $0.characterRange.contains(offset) || NSMaxRange($0.characterRange) == offset
+        }) {
+            rect.origin.y += line.typographicBounds.minY
+            rect.size.height = line.typographicBounds.height
+        }
+        rect.origin.x += textView.textContainerOrigin.x
+        rect.origin.y += textView.textContainerOrigin.y
+        return rect
     }
 
     /// The first character that can be read. The page scrolls under the
@@ -329,6 +391,8 @@ final class EditorViewController: NSViewController, NSTextViewDelegate {
     // MARK: Outline
 
     private func refreshHeadings() {
+        // Only a draft has an outline; parsing the notes for one is waste.
+        guard role == .draft else { return }
         let fresh = isShowingDraft ? MarkdownDocument(textView.string).headings : []
         if fresh != headings {
             headings = fresh

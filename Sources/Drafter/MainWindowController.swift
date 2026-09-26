@@ -401,6 +401,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Keeps the pane in step with the draft: its notes are shown when it
     /// has some, unless they were put away.
+    ///
+    /// Notes put away are loaded all the same, just after the draft is on
+    /// screen, so that ⌘J has only to show them: recalling the notes is
+    /// meant to be instant, and reading and laying out a file is not.
     private func updateNotes() {
         guard let owner = notesOwner else {
             notesEditor.show(nil)
@@ -408,12 +412,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return
         }
         let notes = DraftsDirectory.notes(for: owner)
-        if FileManager.default.fileExists(atPath: notes.path), !session.notesHidden(for: owner) {
-            notesEditor.show(notes)
-            expandNotes(animated: false)
-        } else {
+        guard FileManager.default.fileExists(atPath: notes.path) else {
             notesEditor.show(nil)
             notesItem.isCollapsed = true
+            return
+        }
+        if !session.notesHidden(for: owner) {
+            notesEditor.show(notes)
+            expandNotes()
+        } else {
+            notesItem.isCollapsed = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self, notesOwner == owner else { return }
+                notesEditor.show(notes)
+            }
         }
     }
 
@@ -428,9 +440,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let existed = FileManager.default.fileExists(atPath: DraftsDirectory.notes(for: owner).path)
             let notes = try store.notes(for: owner, title: editor.currentTitle)
             session.setNotesHidden(false, for: owner)
-            notesEditor.show(notes)
+            notesEditor.show(notes)  // already there, unless just made
             if !existed { notesEditor.moveToEnd() }  // below the heading they open with
-            expandNotes(animated: true)
+            expandNotes()
             notesEditor.focus()
         } catch {
             presentError(error)
@@ -438,27 +450,18 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     /// Opens the pane at the height it was left at; the first time, or if
-    /// it was left squeezed to nothing, at a third of the page.
-    private func expandNotes(animated: Bool) {
+    /// it was left squeezed to nothing, at a third of the page. At once: the
+    /// notes are asked for to be written in, not to be watched arriving.
+    private func expandNotes() {
         guard notesItem.isCollapsed else { return }
+        notesItem.isCollapsed = false
         let splitView = pages.splitView
-        // Sized once the pane is out: mid-animation it is still no height.
-        let size = { [weak self] in
-            guard let self else { return }
-            splitView.layoutSubtreeIfNeeded()
-            let height = splitView.bounds.height
-            if notesItem.viewController.view.frame.height < 140, height > 300 {
-                splitView.setPosition(round(height * 0.66), ofDividerAt: 0)
-            }
+        splitView.layoutSubtreeIfNeeded()
+        let height = splitView.bounds.height
+        if notesItem.viewController.view.frame.height < 140, height > 300 {
+            splitView.setPosition(round(height * 0.66), ofDividerAt: 0)
         }
-        guard animated else {
-            notesItem.isCollapsed = false
-            size()
-            return
-        }
-        NSAnimationContext.runAnimationGroup({ _ in
-            notesItem.animator().isCollapsed = false
-        }, completionHandler: { MainActor.assumeIsolated { size() } })
+        notesEditor.restorePositionIfPending()
     }
 
     /// Puts the notes away, and keeps them away for this draft.
@@ -468,7 +471,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         notesEditor.saveNow()
         notesEditor.recordPosition()
         if let owner = notesOwner { session.setNotesHidden(true, for: owner) }
-        notesItem.animator().isCollapsed = true
+        notesItem.isCollapsed = true
         if hadFocus { editor.focus() }
     }
 

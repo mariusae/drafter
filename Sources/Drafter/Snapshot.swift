@@ -25,8 +25,14 @@ enum Snapshot {
                 controller.editor.textView.setSelectedRange(NSRange(location: location, length: 5))
             }
         }
-        if env["DRAFTER_SNAPSHOT_NOTES"] != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { controller.toggleNotes(nil) }
+        if let value = env["DRAFTER_SNAPSHOT_NOTES"] {
+            let after = Double(value).map { $0 > 1 ? $0 : 1.2 } ?? 1.2
+            DispatchQueue.main.asyncAfter(deadline: .now() + after) { controller.toggleNotes(nil) }
+            if env["DRAFTER_SNAPSHOT_NOTES_CYCLE"] != nil {
+                // Away and back again, as a writer does.
+                DispatchQueue.main.asyncAfter(deadline: .now() + after + 0.5) { controller.toggleNotes(nil) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + after + 1.0) { controller.toggleNotes(nil) }
+            }
         }
         if let text = env["DRAFTER_SNAPSHOT_TYPE"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
