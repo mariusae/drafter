@@ -9,6 +9,9 @@ enum Snapshot {
         guard let dir = ProcessInfo.processInfo.environment["DRAFTER_SNAPSHOT"] else { return }
         let url = URL(fileURLWithPath: dir, isDirectory: true)
         let env = ProcessInfo.processInfo.environment
+        if let name = env["DRAFTER_APPEARANCE"] {
+            NSApp.appearance = NSAppearance(named: name == "dark" ? .darkAqua : .aqua)
+        }
         // A link as Launch Services would deliver it: one at launch, before
         // the directory is read, and one once the app is up.
         if let link = env["DRAFTER_SNAPSHOT_LINK"].flatMap(URL.init(string:)) {

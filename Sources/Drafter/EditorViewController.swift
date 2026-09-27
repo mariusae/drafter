@@ -19,6 +19,54 @@ final class DraftTextView: NSTextView {
     override func cancelOperation(_ sender: Any?) {
         if let onEscape { onEscape() } else { super.cancelOperation(sender) }
     }
+
+    override func didChangeText() {
+        super.didChangeText()
+        needsDisplay = true  // a fence typed or taken away moves a wash
+    }
+
+    /// Fenced code sits on a wash across the column, its language in the
+    /// corner, as in reflect-mac.
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect)
+        guard let storage = textStorage, let layout = textLayoutManager, storage.length > 0 else { return }
+        let start = layout.documentRange.location
+        let origin = textContainerOrigin
+        let width = textContainer?.size.width ?? bounds.width
+        storage.enumerateAttribute(.drafterCodeBlock, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value != nil,
+                  let from = layout.location(start, offsetBy: range.location),
+                  let to = layout.location(from, offsetBy: range.length) else { return }
+            var block = NSRect.null
+            layout.enumerateTextLayoutFragments(from: from, options: []) { fragment in
+                guard fragment.rangeInElement.location.compare(to) == .orderedAscending else { return false }
+                block = block.union(fragment.layoutFragmentFrame)
+                return true
+            }
+            guard !block.isNull else { return }
+            let wash = NSRect(x: origin.x - 10, y: origin.y + block.minY - 4, width: width + 20, height: block.height + 6)
+            guard wash.intersects(rect) else { return }
+            NSColor.quaternaryLabelColor.withAlphaComponent(0.12).setFill()
+            NSBezierPath(roundedRect: wash, xRadius: 6, yRadius: 6).fill()
+            if let language = Self.language(of: (storage.string as NSString).substring(with: range)) {
+                let font = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?.pointSize ?? 15
+                let label = NSAttributedString(string: language, attributes: [
+                    .font: NSFont.systemFont(ofSize: round(font * 0.75), weight: .medium),
+                    .foregroundColor: NSColor.tertiaryLabelColor,
+                ])
+                let size = label.size()
+                label.draw(at: NSPoint(x: wash.maxX - size.width - 10, y: wash.minY + 6))
+            }
+        }
+    }
+
+    /// The language an opening fence names, if any.
+    private static func language(of block: String) -> String? {
+        guard let first = block.split(separator: "\n", maxSplits: 1).first else { return nil }
+        let name = first.trimmingCharacters(in: .whitespaces).drop(while: { $0 == "`" || $0 == "~" })
+            .trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
+    }
 }
 
 /// Edits one draft at a time, saving as the writer pauses.
@@ -29,19 +77,16 @@ final class DraftTextView: NSTextView {
 @MainActor
 final class EditorViewController: NSViewController, NSTextViewDelegate {
     /// A draft, or the notes beside one. Notes are the same Markdown, set a
-    /// little smaller on a page a shade apart, so the two never blur.
+    /// little smaller under a header of their own, so the two never blur.
     enum Role {
         case draft, notes
 
         var fontSizeKey: String { self == .draft ? "EditorFontSize" : "NotesFontSize" }
         var defaultFontSize: CGFloat { self == .draft ? 17 : 15 }
-        var background: NSColor {
-            self == .draft ? .textBackgroundColor
-                : NSColor(name: nil) { appearance in
-                    let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                    return dark ? NSColor(white: 0.155, alpha: 1) : NSColor(white: 0.975, alpha: 1)
-                }
-        }
+        /// The page: the system's text background, light or dark, as
+        /// reflect-mac has it. The notes are told apart by their header and
+        /// their smaller type, not by a color of our own.
+        var background: NSColor { .textBackgroundColor }
     }
 
     let store: DraftStore
